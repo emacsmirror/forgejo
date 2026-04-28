@@ -430,7 +430,7 @@ Warns if manual merge is disabled for the repo."
    (format "repos/%s/%s/pulls/%d/merge" owner repo n)
    nil
    `((Do . "manually-merged")
-     (merge_commit_id . ,sha))
+     (MergeCommitID . ,sha))
    (lambda (_data _headers)
      (message "PR #%d marked as manually merged." n))))
 
