@@ -240,6 +240,7 @@ Shows cached data immediately, then syncs from the API in the background."
   :group "Actions"
   "r" ("Reply at point" forgejo-pull-reply)
   "R" ("Submit review" forgejo-review-submit)
+  "X" ("Mark merged" forgejo-pull-view-mark-merged)
   :group "Navigate"
   "=" ("PR diff" forgejo-pull-view-diff)
   "f" ("Fetch branch" forgejo-pull-view-fetch)
@@ -251,6 +252,38 @@ Shows cached data immediately, then syncs from the API in the background."
   :group 'forgejo
   (setq-local browse-url-browser-function #'forgejo-view-browse-url)
   (run-hook-with-args 'forgejo-buffer-setup-functions (current-buffer)))
+
+(defun forgejo-pull--commit-collection ()
+  "Return an alist of (DISPLAY . FULL-SHA) for commits on the current branch."
+  (let (result)
+    (with-temp-buffer
+      (process-file "git" nil '(t nil) nil
+                    "log" "--format=%H %s")
+      (goto-char (point-min))
+      (while (not (eobp))
+        (when (looking-at "\\([0-9a-f]+\\) \\(.*\\)")
+          (let ((full-sha (match-string 1))
+                (subject (match-string 2)))
+            (push (cons (concat (substring full-sha 0 12) " "
+                                (propertize subject 'face 'font-lock-doc-face))
+                        full-sha)
+                  result)))
+        (forward-line 1)))
+    (nreverse result)))
+
+(defun forgejo-pull-view-mark-merged ()
+  "Mark the current PR as manually merged."
+  (interactive)
+  (let* ((number (alist-get 'number forgejo-view--data))
+         (host forgejo-repo--host)
+         (owner forgejo-repo--owner)
+         (repo forgejo-repo--name)
+         (commits (forgejo-pull--commit-collection))
+         (choice (completing-read "Merge commit: " commits nil t))
+         (sha (alist-get choice commits nil nil #'string=)))
+    (when (y-or-n-p (format "Mark PR #%d as manually merged at %s?"
+                            number (substring sha 0 12)))
+      (forgejo-vc--mark-merged host owner repo number sha))))
 
 (defun forgejo-pull--render-detail (buf-name host-url owner repo pr-alist
 					     timeline-alists)
@@ -360,6 +393,7 @@ Shows cached data from DB instantly, syncs in background."
 (declare-function forgejo-token "forgejo.el" (host-url))
 (declare-function forgejo-vc-fetch "forgejo-vc.el" (n))
 (declare-function forgejo-vc--repo-from-remote "forgejo-vc.el" ())
+(declare-function forgejo-vc--mark-merged "forgejo-vc.el" (host owner repo n sha))
 
 (defun forgejo-pull-view-diff ()
   "Show the full diff for the current pull request."
