@@ -129,6 +129,11 @@ setup, passing the buffer as an argument:
                   (display-line-numbers-mode -1)))))
 #+end_src
 
+* Comparison with other forgejo clients
+** fj.el
+- fj.el takes a direct-API approach while emacs-forgejo uses a local SQLite cache as source of truth.
+- fj.el supports the fork/PR workflow while emacs-forgejo supports AGit-Flow.
+
 * Screenshots
 
 #+caption: issue list
