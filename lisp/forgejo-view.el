@@ -82,6 +82,8 @@ Dispatches to the appropriate handler based on text properties."
     (forgejo-view-follow-ref))
    ((get-text-property (point) 'forgejo-commit-sha)
     (forgejo-view-commit-diff))
+   ((get-text-property (point) 'forgejo-compare-range)
+    (forgejo-view-compare-diff))
    ((get-text-property (point) 'forgejo-review-id)
     (forgejo-view-open-review-thread))
    (t (message "Edit history not yet implemented"))))
@@ -164,6 +166,37 @@ Tries local git first, falls back to the API."
              (user-error "Commit %s not found" sha)
            (forgejo-view--show-diff-buffer buf-name diff-text))))
      nil t)))
+
+(defun forgejo-view-compare-diff ()
+  "View the diff between old and new commits of a force push at point."
+  (interactive)
+  (when-let* ((range (get-text-property (point) 'forgejo-compare-range))
+              (old (car range))
+              (new (cdr range)))
+    (let* ((host-url forgejo-repo--host)
+           (owner forgejo-repo--owner)
+           (repo forgejo-repo--name)
+           (short-old (substring old 0 (min 8 (length old))))
+           (short-new (substring new 0 (min 8 (length new))))
+           (buf-name (format "*forgejo-diff: %s..%s*" short-old short-new))
+           (url (format "%s/%s/%s/compare/%s..%s.diff"
+                        host-url owner repo old new))
+           (url-request-method "GET")
+           (url-request-extra-headers
+            `(("Authorization" . ,(encode-coding-string
+                                   (concat "token " (forgejo-token host-url))
+                                   'ascii)))))
+      (url-retrieve
+       url
+       (lambda (_status)
+         (goto-char (point-min))
+         (re-search-forward "\r?\n\r?\n" nil t)
+         (let ((diff-text (buffer-substring-no-properties (point) (point-max))))
+           (kill-buffer (current-buffer))
+           (if (string-empty-p (string-trim diff-text))
+               (message "No diff between %s and %s" short-old short-new)
+             (forgejo-view--show-diff-buffer buf-name diff-text))))
+       nil t))))
 
 ;;; URL routing
 

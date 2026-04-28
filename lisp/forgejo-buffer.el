@@ -328,16 +328,26 @@ NODE-DATA is a plist with :type and type-specific keys."
         (label-color (plist-get data :label-color))
         (ref-number (plist-get data :ref-number))
         (ref-commit (plist-get data :ref-commit))
-        (commits (plist-get data :commits)))
+        (commits (plist-get data :commits))
+        (compare-range (plist-get data :compare-range)))
     ;; Actor in author face, verb in event face
     (insert (propertize actor 'face 'forgejo-comment-author-face)
             " "
-            (propertize (concat event-type " ")
-                        'face (pcase event-type
-                                ("closed" 'forgejo-closed-face)
-                                ("reopened" 'forgejo-open-face)
-                                ("merged" 'success)
-                                (_ 'forgejo-event-face))))
+            (if compare-range
+                (concat
+                 (propertize event-type
+                             'face 'link
+                             'mouse-face 'highlight
+                             'forgejo-compare-range compare-range
+                             'help-echo "RET: view force-push diff"
+                             'keymap forgejo-buffer--action-map)
+                 " ")
+              (propertize (concat event-type " ")
+                          'face (pcase event-type
+                                  ("closed" 'forgejo-closed-face)
+                                  ("reopened" 'forgejo-open-face)
+                                  ("merged" 'success)
+                                  (_ 'forgejo-event-face)))))
     ;; Detail: deadline, label with color, ref with link, or plain
     (cond
      (deadline
@@ -440,15 +450,21 @@ NODE-DATA is a plist with :type and type-specific keys."
                                              :array-type 'list)
                         (error nil))))
          (commit-ids (when push-data (alist-get 'commit_ids push-data)))
-         (force-p (when push-data (alist-get 'is_force_push push-data))))
-    (list :type 'event
-          :event-type (if (eq force-p t) "force pushed" "pushed")
-          :actor actor
-          :created-at (alist-get 'created_at event)
-          :commits commit-ids
-          :detail (format "%d commit%s"
-                          (length commit-ids)
-                          (if (= (length commit-ids) 1) "" "s")))))
+         (force-p (when push-data (eq (alist-get 'is_force_push push-data) t))))
+    (if force-p
+        (list :type 'event
+              :event-type "force pushed"
+              :actor actor
+              :created-at (alist-get 'created_at event)
+              :compare-range (cons (nth 0 commit-ids) (nth 1 commit-ids)))
+      (list :type 'event
+            :event-type "pushed"
+            :actor actor
+            :created-at (alist-get 'created_at event)
+            :commits commit-ids
+            :detail (format "%d commit%s"
+                            (length commit-ids)
+                            (if (= (length commit-ids) 1) "" "s"))))))
 
 (defun forgejo-buffer--node-ref (event actor)
   "Build a reference event node from EVENT with ACTOR."
