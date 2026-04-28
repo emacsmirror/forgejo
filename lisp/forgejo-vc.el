@@ -376,27 +376,37 @@ With prefix arg FORCE-PUSH-P, force-push to update an existing PR."
 ;;;###autoload
 (defun forgejo-vc-fetch (n)
   "Fetch pull request N and check out the pr-N branch.
-Warns if manual merge is disabled for the repo."
+If the branch already exists, update it to the latest PR head."
   (interactive "nPR number: ")
   (let* ((context (or (forgejo-vc--repo-from-remote)
                       (user-error "No Forgejo remote found")))
          (remote (nth 3 context))
          (branch (format "pr-%d" n))
-         (ref (format "refs/pull/%d/head" n)))
+         (ref (format "pull/%d/head" n))
+         (dir default-directory)
+         (branch-exists (member branch (vc-git-branches))))
     (message "Fetching PR #%d from %s..." n remote)
-    (let ((dir default-directory))
+    (let ((stderr-buf (generate-new-buffer " *forgejo-fetch-stderr*")))
       (make-process
        :name (format "forgejo-fetch-pr-%d" n)
-       :command (list "git" "fetch" remote (format "%s:%s" ref branch))
+       :command (list "git" "fetch" remote ref)
+       :stderr stderr-buf
        :sentinel
        (lambda (_proc event)
          (cond
           ((string-match-p "finished" event)
            (let ((default-directory dir))
-             (vc-git-command nil 0 nil "checkout" branch))
+             (if branch-exists
+                 (progn
+                   (vc-git-command nil 0 nil "checkout" branch)
+                   (vc-git-command nil 0 nil "reset" "--hard" "FETCH_HEAD"))
+               (vc-git-command nil 0 nil "checkout" "-b" branch "FETCH_HEAD")))
            (message "Checked out %s from %s" branch remote))
           ((string-match-p "\\(?:exited\\|signal\\)" event)
-           (message "Failed to fetch PR #%d: %s" n (string-trim event)))))))))
+           (let ((err (with-current-buffer stderr-buf
+                        (string-trim (buffer-string)))))
+             (message "Failed to fetch PR #%d: %s" n err))))
+         (kill-buffer stderr-buf))))))
 
 ;;;###autoload
 (defun forgejo-vc-update ()
