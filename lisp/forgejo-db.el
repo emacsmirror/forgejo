@@ -184,6 +184,7 @@ Detects stale schema and rebuilds the database if necessary."
 (defun forgejo-db--track-edit (db host owner repo number new-body)
   "If issue body changed, append old body to previous_body history.
 Returns nil if no change or no existing row."
+  (setq owner (downcase owner) repo (downcase repo))
   (when-let* ((new-body)
               (existing (car (sqlite-select
                               db
@@ -207,6 +208,7 @@ Returns nil if no change or no existing row."
 Tracks body edits in previous_body.
 When IS-PULL is non-nil, mark all entries as pull requests regardless of
 whether a `pull_request' field is present in the data."
+  (setq owner (downcase owner) repo (downcase repo))
   (forgejo-db--with-transaction
     (let ((db (forgejo-db--ensure)))
       (dolist (issue issues)
@@ -300,6 +302,7 @@ FILTERS is a plist with keys:
   :type       \"pr\" or \"issue\"
   :is-pull    when non-nil, filter to pull requests only
   :no-pulls   when non-nil, exclude pull requests"
+  (setq owner (downcase owner) repo (downcase repo))
   (let* ((filter-result (forgejo-db--build-filter-clauses filters))
          (clauses (append (list "host = ?" "owner = ?" "repo = ?")
                           (car filter-result)))
@@ -315,6 +318,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-save-timeline (host owner repo number events)
   "Upsert timeline EVENTS for issue NUMBER in HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (when (and events (listp events))
     (forgejo-db--with-transaction
       (let ((db (forgejo-db--ensure)))
@@ -339,6 +343,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-get-timeline (host owner repo number)
   "Get cached timeline events for issue NUMBER in HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (forgejo-db--select
    (format "SELECT %s FROM timeline_events
             WHERE host = ? AND owner = ? AND repo = ? AND issue_number = ?
@@ -350,6 +355,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-save-labels (host owner repo labels)
   "Upsert LABELS for HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (let ((db (forgejo-db--ensure)))
     (dolist (label labels)
       (let-alist label
@@ -362,6 +368,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-get-labels (host owner repo)
   "Get cached labels for HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (forgejo-db--select
    "SELECT * FROM labels WHERE host = ? AND owner = ? AND repo = ?
     ORDER BY name"
@@ -369,6 +376,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-get-label-id (host owner repo name)
   "Return the label ID for NAME in HOST/OWNER/REPO, or nil."
+  (setq owner (downcase owner) repo (downcase repo))
   (caar (forgejo-db--select
          "SELECT id FROM labels WHERE host = ? AND owner = ? AND repo = ? AND name = ?"
          (list host owner repo name))))
@@ -377,6 +385,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-save-milestones (host owner repo milestones)
   "Upsert MILESTONES for HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (let ((db (forgejo-db--ensure)))
     (dolist (ms milestones)
       (let-alist ms
@@ -390,6 +399,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-get-milestones (host owner repo)
   "Get cached milestones for HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (forgejo-db--select
    "SELECT * FROM milestones WHERE host = ? AND owner = ? AND repo = ?
     ORDER BY title"
@@ -397,6 +407,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-get-milestone-id (host owner repo title)
   "Return the milestone ID for TITLE in HOST/OWNER/REPO, or nil."
+  (setq owner (downcase owner) repo (downcase repo))
   (caar (forgejo-db--select
          "SELECT id FROM milestones WHERE host = ? AND owner = ? AND repo = ? AND title = ?"
          (list host owner repo title))))
@@ -413,8 +424,8 @@ FILTERS is a plist with keys:
          "INSERT OR REPLACE INTO repos (host, owner, name, description, is_user_repo)
           VALUES (?, ?, ?, ?, 1)"
          (list host
-               (alist-get 'login .owner)
-               .name
+               (downcase (alist-get 'login .owner))
+               (downcase .name)
                (forgejo-db--nullable .description)))))))
 
 (defun forgejo-db-get-user-repos (host)
@@ -437,6 +448,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-get-sync-time (host owner repo endpoint)
   "Get the last sync timestamp for ENDPOINT in HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (caar (forgejo-db--select
          "SELECT last_synced FROM sync_state
           WHERE host = ? AND owner = ? AND repo = ? AND endpoint = ?"
@@ -444,6 +456,7 @@ FILTERS is a plist with keys:
 
 (defun forgejo-db-set-sync-time (host owner repo endpoint time)
   "Set the last sync TIME for ENDPOINT in HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (forgejo-db--execute
    "INSERT OR REPLACE INTO sync_state
       (host, owner, repo, endpoint, last_synced)
@@ -506,6 +519,7 @@ fields like label, assignee, old_title, new_title."
 
 (defun forgejo-db-get-issue (host owner repo number)
   "Get a single issue alist from the DB, or nil."
+  (setq owner (downcase owner) repo (downcase repo))
   (when-let* ((rows (forgejo-db--select
                      (format "SELECT %s FROM issues
                               WHERE host = ? AND owner = ? AND repo = ? AND number = ?"
@@ -516,6 +530,7 @@ fields like label, assignee, old_title, new_title."
 
 (defun forgejo-db-mark-read (host owner repo number)
   "Mark issue/PR NUMBER as read for HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (forgejo-db--execute
    "UPDATE issues SET read = 1
     WHERE host = ? AND owner = ? AND repo = ? AND number = ?"
@@ -524,6 +539,7 @@ fields like label, assignee, old_title, new_title."
 (defun forgejo-db-close-missing (host owner repo numbers &optional is-pull)
   "Mark issues NOT in NUMBERS as closed for HOST/OWNER/REPO.
 When IS-PULL is non-nil, only affect pull requests."
+  (setq owner (downcase owner) repo (downcase repo))
   (when numbers
     (let ((placeholders (mapconcat (lambda (_) "?") numbers ","))
           (pull-filter (if is-pull "AND is_pull = 1" "AND is_pull = 0")))
@@ -537,6 +553,7 @@ When IS-PULL is non-nil, only affect pull requests."
 
 (defun forgejo-db-get-authors (host owner repo)
   "Get distinct author logins for HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (mapcar #'car
           (forgejo-db--select
            "SELECT DISTINCT user FROM issues
@@ -548,6 +565,7 @@ When IS-PULL is non-nil, only affect pull requests."
 
 (defun forgejo-db-get-issue-titles (host owner repo)
   "Return alist of (NUMBER . TITLE) for all issues/PRs in HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (mapcar (lambda (row) (cons (nth 0 row) (nth 1 row)))
           (forgejo-db--select
            "SELECT number, title FROM issues
@@ -559,6 +577,7 @@ When IS-PULL is non-nil, only affect pull requests."
 
 (defun forgejo-db-get-hosts-for-repo (owner repo)
   "Return distinct host strings that have data for OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
   (mapcar #'car
           (forgejo-db--select
            "SELECT DISTINCT host FROM issues WHERE owner = ? AND repo = ?"
