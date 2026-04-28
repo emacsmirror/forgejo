@@ -90,9 +90,9 @@ Poll specific repos for new issues/PRs on a timer:
 
 #+begin_src emacs-lisp
   (setq forgejo-watch-rules
-        '("thanosapollo/forgejo.el"
-          ("guix/guix" . "state:open label:team-emacs")
-          ("*" . "author:thanosapollo")))
+        '("thanosapollo/emacs-forgejo" ;; all for thanosapollo/emacs-forgejo repo
+          ("guix/guix" . "state:open label:team-emacs") ;; all state:open with team-emacs label
+          ("*" . "author:<your-username>"))) ;; everything in the db with author:<your-username>
   (forgejo-watch-mode 1)
 #+end_src
 
