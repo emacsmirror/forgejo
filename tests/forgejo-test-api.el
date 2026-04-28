@@ -100,6 +100,23 @@
     (insert "HTTP/1.1 200 OK\r\n\r\n{}")
     (should (= (forgejo-api--response-status (current-buffer)) 200))))
 
+(ert-deftest forgejo-test-api-response-status-304 ()
+  "Extract 304 status code for conditional requests."
+  (with-temp-buffer
+    (insert "HTTP/1.1 304 Not Modified\r\n\r\n")
+    (should (= (forgejo-api--response-status (current-buffer)) 304))))
+
+(ert-deftest forgejo-test-api-parse-headers-etag ()
+  "Parse ETag and Last-Modified headers."
+  (with-temp-buffer
+    (insert "HTTP/1.1 200 OK\r\n"
+            "ETag: \"abc123\"\r\n"
+            "Last-Modified: Tue, 01 Apr 2026 12:00:00 GMT\r\n"
+            "\r\n{}")
+    (let ((headers (forgejo-api--parse-headers (current-buffer))))
+      (should (string= (plist-get headers :etag) "\"abc123\""))
+      (should (string-match-p "Tue" (plist-get headers :last-modified))))))
+
 ;;; Group 5: Auth
 
 (ert-deftest forgejo-test-api-token-from-variable ()
@@ -116,7 +133,59 @@
         (forgejo-token nil))
     (should-error (forgejo-token "https://codeberg.org") :type 'user-error)))
 
-;;; Group 6: Default limit
+;;; Group 6: Header parsing with rate limits
+
+(ert-deftest forgejo-test-api-parse-headers-rate-limit ()
+  "Parse rate limit headers from HTTP response."
+  (with-temp-buffer
+    (insert "HTTP/1.1 200 OK\r\n"
+            "X-Total-Count: 10\r\n"
+            "X-RateLimit-Remaining: 42\r\n"
+            "X-RateLimit-Limit: 300\r\n"
+            "X-RateLimit-Reset: 1700000000\r\n"
+            "\r\n{}")
+    (let ((headers (forgejo-api--parse-headers (current-buffer))))
+      (should (= (plist-get headers :total-count) 10))
+      (should (= (plist-get headers :rate-limit-remaining) 42))
+      (should (= (plist-get headers :rate-limit-limit) 300))
+      (should (= (plist-get headers :rate-limit-reset) 1700000000)))))
+
+;;; Group 7: Rate limit helpers
+
+(ert-deftest forgejo-test-api-format-reset-time-future ()
+  "Format a future reset timestamp as relative minutes."
+  (let ((future (+ (float-time) 300)))
+    (should (string-match-p "in [0-9]+ min"
+                            (forgejo-api--format-reset-time future)))))
+
+(ert-deftest forgejo-test-api-format-reset-time-past ()
+  "Format a past reset timestamp as now."
+  (let ((past (- (float-time) 10)))
+    (should (string= "now" (forgejo-api--format-reset-time past)))))
+
+(ert-deftest forgejo-test-api-format-reset-time-nil ()
+  "Format nil timestamp as unknown."
+  (should (string= "unknown" (forgejo-api--format-reset-time nil))))
+
+;;; Group 8: Error plist construction
+
+(ert-deftest forgejo-test-api-error-plist ()
+  "Build a structured error plist from components."
+  (let ((plist (forgejo-api--error-plist 404 "GET" "repos/x/y" "Not Found" nil)))
+    (should (= (plist-get plist :status) 404))
+    (should (string= (plist-get plist :method) "GET"))
+    (should (string= (plist-get plist :endpoint) "repos/x/y"))
+    (should (string= (plist-get plist :message) "Not Found"))
+    (should (null (plist-get plist :data)))))
+
+(ert-deftest forgejo-test-api-error-plist-network ()
+  "Error plist for network errors has nil status."
+  (let ((plist (forgejo-api--error-plist nil "POST" "repos/x/y/issues"
+                                         "connection refused" nil)))
+    (should (null (plist-get plist :status)))
+    (should (string= (plist-get plist :message) "connection refused"))))
+
+;;; Group 9: Default limit
 
 (ert-deftest forgejo-test-api-default-limit-cached ()
   "Return cached limit when available."

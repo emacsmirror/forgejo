@@ -102,6 +102,8 @@
        repo TEXT NOT NULL,
        endpoint TEXT NOT NULL,
        last_synced TEXT,
+       etag TEXT,
+       last_modified TEXT,
        PRIMARY KEY (host, owner, repo, endpoint))"
     )
   "SQL statements to initialize the database schema.")
@@ -210,21 +212,21 @@ When IS-PULL is non-nil, mark all entries as pull requests regardless of
 whether a `pull_request' field is present in the data."
   (setq owner (downcase owner) repo (downcase repo))
   (forgejo-db--with-transaction
-    (let ((db (forgejo-db--ensure)))
-      (dolist (issue issues)
-	(let-alist issue
-          (let ((body (forgejo-db--nullable .body))
-		(labels (forgejo-db--nullable .labels))
-		(milestone (forgejo-db--nullable .milestone))
-		(assignees (forgejo-db--nullable .assignees))
-		(closed (forgejo-db--nullable .closed_at))
-		(pr (or is-pull (forgejo-db--nullable .pull_request))))
-            ;; Track edits before overwriting
-            (when body
-              (forgejo-db--track-edit db host owner repo .number body))
-            (sqlite-execute
-             db
-             "INSERT INTO issues
+   (let ((db (forgejo-db--ensure)))
+     (dolist (issue issues)
+       (let-alist issue
+         (let ((body (forgejo-db--nullable .body))
+	       (labels (forgejo-db--nullable .labels))
+	       (milestone (forgejo-db--nullable .milestone))
+	       (assignees (forgejo-db--nullable .assignees))
+	       (closed (forgejo-db--nullable .closed_at))
+	       (pr (or is-pull (forgejo-db--nullable .pull_request))))
+           ;; Track edits before overwriting
+           (when body
+             (forgejo-db--track-edit db host owner repo .number body))
+           (sqlite-execute
+            db
+            "INSERT INTO issues
               (id, host, owner, repo, number, title, state, body,
                user, labels, milestone, assignees, comments_count,
                created_at, updated_at, closed_at, is_pull, read)
@@ -235,16 +237,16 @@ whether a `pull_request' field is present in the data."
               assignees=excluded.assignees, comments_count=excluded.comments_count,
               updated_at=excluded.updated_at, closed_at=excluded.closed_at,
               is_pull=excluded.is_pull, read=0"
-             (list .id host owner repo .number .title .state body
-                   (alist-get 'login .user)
-                   (forgejo-db--encode-json (when (listp labels) labels))
-                   (when (listp milestone) (alist-get 'title milestone))
-                   (forgejo-db--encode-json
-                    (when (listp assignees)
-                      (mapcar (lambda (a) (alist-get 'login a)) assignees)))
-                   .comments
-                   .created_at .updated_at closed
-                   (if pr 1 0)))))))))
+            (list .id host owner repo .number .title .state body
+                  (alist-get 'login .user)
+                  (forgejo-db--encode-json (when (listp labels) labels))
+                  (when (listp milestone) (alist-get 'title milestone))
+                  (forgejo-db--encode-json
+                   (when (listp assignees)
+                     (mapcar (lambda (a) (alist-get 'login a)) assignees)))
+                  .comments
+                  .created_at .updated_at closed
+                  (if pr 1 0)))))))))
 
 (defun forgejo-db--like (s)
   "Wrap S in SQL LIKE wildcards."
@@ -321,12 +323,12 @@ FILTERS is a plist with keys:
   (setq owner (downcase owner) repo (downcase repo))
   (when (and events (listp events))
     (forgejo-db--with-transaction
-      (let ((db (forgejo-db--ensure)))
-        (dolist (event events)
-          (let-alist event
-            (sqlite-execute
-             db
-             "INSERT INTO timeline_events
+     (let ((db (forgejo-db--ensure)))
+       (dolist (event events)
+         (let-alist event
+           (sqlite-execute
+            db
+            "INSERT INTO timeline_events
               (id, host, owner, repo, issue_number, type, body,
                user, created_at, data)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -334,12 +336,12 @@ FILTERS is a plist with keys:
               type=excluded.type, body=excluded.body,
               user=excluded.user, created_at=excluded.created_at,
               data=excluded.data"
-             (list .id host owner repo number
-                   (forgejo-db--nullable .type)
-                   (forgejo-db--nullable .body)
-                   (alist-get 'login (forgejo-db--nullable .user))
-                   (forgejo-db--nullable .created_at)
-                   (forgejo-db--encode-json event)))))))))
+            (list .id host owner repo number
+                  (forgejo-db--nullable .type)
+                  (forgejo-db--nullable .body)
+                  (alist-get 'login (forgejo-db--nullable .user))
+                  (forgejo-db--nullable .created_at)
+                  (forgejo-db--encode-json event)))))))))
 
 (defun forgejo-db-get-timeline (host owner repo number)
   "Get cached timeline events for issue NUMBER in HOST/OWNER/REPO."
@@ -458,10 +460,31 @@ FILTERS is a plist with keys:
   "Set the last sync TIME for ENDPOINT in HOST/OWNER/REPO."
   (setq owner (downcase owner) repo (downcase repo))
   (forgejo-db--execute
-   "INSERT OR REPLACE INTO sync_state
-      (host, owner, repo, endpoint, last_synced)
-    VALUES (?, ?, ?, ?, ?)"
+   "INSERT INTO sync_state (host, owner, repo, endpoint, last_synced)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (host, owner, repo, endpoint)
+    DO UPDATE SET last_synced = excluded.last_synced"
    (list host owner repo endpoint time)))
+
+(defun forgejo-db-get-cache-headers (host owner repo endpoint)
+  "Get cached ETag and Last-Modified for ENDPOINT in HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
+  (let ((row (car (forgejo-db--select
+                   "SELECT etag, last_modified FROM sync_state
+                    WHERE host = ? AND owner = ? AND repo = ? AND endpoint = ?"
+                   (list host owner repo endpoint)))))
+    (when row
+      (list :etag (nth 0 row) :last-modified (nth 1 row)))))
+
+(defun forgejo-db-set-cache-headers (host owner repo endpoint etag last-modified)
+  "Update cached ETAG and LAST-MODIFIED for ENDPOINT in HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
+  (forgejo-db--execute
+   "INSERT INTO sync_state (host, owner, repo, endpoint, etag, last_modified)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (host, owner, repo, endpoint)
+    DO UPDATE SET etag = excluded.etag, last_modified = excluded.last_modified"
+   (list host owner repo endpoint etag last-modified)))
 
 ;;; Row-to-alist conversion (explicit column queries)
 

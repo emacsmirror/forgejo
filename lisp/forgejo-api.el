@@ -36,6 +36,22 @@
 (declare-function forgejo-token "forgejo.el" (host-url))
 (defvar forgejo--api-default-limit)
 
+(defcustom forgejo-api-timeout 30
+  "Seconds before an async API request times out.
+When nil, no timeout is enforced."
+  :type '(choice (integer :tag "Seconds")
+                 (const :tag "No timeout" nil))
+  :group 'forgejo)
+
+(defcustom forgejo-api-rate-limit-warn-threshold 10
+  "Warn when fewer than this many API requests remain."
+  :type 'integer
+  :group 'forgejo)
+
+(defvar forgejo-api--rate-limit-state (make-hash-table :test 'equal)
+  "Per-host rate limit state.
+Keys are host URLs, values are plists with :remaining, :limit, :reset.")
+
 ;;; URL building
 
 (defun forgejo-api--url (host endpoint &optional params)
@@ -57,21 +73,37 @@ PARAMS is an alist of (KEY . VALUE) pairs for the query string."
 ;;; Response parsing
 
 (defun forgejo-api--parse-headers (buffer)
-  "Parse pagination headers from HTTP response BUFFER.
-Returns a plist with :total-count and :link."
+  "Parse pagination and rate-limit headers from HTTP response BUFFER.
+Returns a plist with :total-count, :link, :rate-limit-remaining,
+:rate-limit-limit, and :rate-limit-reset."
   (with-current-buffer buffer
     (save-excursion
       (goto-char (point-min))
-      (let (total-count link)
-        (while (re-search-forward "^\\([^:]+\\): \\(.+\\)\r?$" nil t)
+      (forward-line 1)
+      (let (total-count link rl-remaining rl-limit rl-reset etag last-modified)
+        (while (re-search-forward "^\\([^:\n]+\\): \\(.+\\)\r?$" nil t)
           (let ((name (downcase (match-string 1)))
-                (value (match-string 2)))
+                (value (string-trim-right (match-string 2))))
             (cond
              ((string= name "x-total-count")
               (setq total-count (string-to-number value)))
              ((string= name "link")
-              (setq link value)))))
-        (list :total-count total-count :link link)))))
+              (setq link value))
+             ((string= name "x-ratelimit-remaining")
+              (setq rl-remaining (string-to-number value)))
+             ((string= name "x-ratelimit-limit")
+              (setq rl-limit (string-to-number value)))
+             ((string= name "x-ratelimit-reset")
+              (setq rl-reset (string-to-number value)))
+             ((string= name "etag")
+              (setq etag value))
+             ((string= name "last-modified")
+              (setq last-modified value)))))
+        (list :total-count total-count :link link
+              :rate-limit-remaining rl-remaining
+              :rate-limit-limit rl-limit
+              :rate-limit-reset rl-reset
+              :etag etag :last-modified last-modified)))))
 
 (defun forgejo-api--parse-response (buffer)
   "Parse the JSON body from HTTP response BUFFER.
@@ -89,10 +121,51 @@ Returns the parsed JSON as alists/lists, or nil for empty bodies."
     (when (re-search-forward "^HTTP/[0-9.]+ \\([0-9]+\\)" nil t)
       (string-to-number (match-string 1)))))
 
+;;; Rate limit helpers
+
+(defun forgejo-api--format-reset-time (unix-timestamp)
+  "Format UNIX-TIMESTAMP as a human-readable relative time string."
+  (if unix-timestamp
+      (let ((delta (- unix-timestamp (float-time))))
+        (if (> delta 0)
+            (format "in %d min" (ceiling (/ delta 60)))
+          "now"))
+    "unknown"))
+
+(defun forgejo-api--check-rate-limit (host headers)
+  "Update rate limit state for HOST from HEADERS, warn if low."
+  (let ((remaining (plist-get headers :rate-limit-remaining)))
+    (when remaining
+      (puthash host
+               (list :remaining remaining
+                     :limit (plist-get headers :rate-limit-limit)
+                     :reset (plist-get headers :rate-limit-reset))
+               forgejo-api--rate-limit-state)
+      (when (< remaining forgejo-api-rate-limit-warn-threshold)
+        (message "Forgejo API: %d requests remaining (resets %s)"
+                 remaining
+                 (forgejo-api--format-reset-time
+                  (plist-get headers :rate-limit-reset)))))))
+
+(defun forgejo-api-rate-limit (host)
+  "Return the cached rate-limit plist for HOST, or nil."
+  (gethash host forgejo-api--rate-limit-state))
+
+;;; Error helpers
+
+(defun forgejo-api--error-plist (http-status method endpoint message data)
+  "Build a structured error plist from components.
+HTTP-STATUS is the numeric code (or nil for network errors).
+METHOD and ENDPOINT identify the request.
+MESSAGE is a human-readable error string.
+DATA is the parsed response body, if any."
+  (list :status http-status :method method :endpoint endpoint
+        :message message :data data))
+
 ;;; Core request
 
 (defun forgejo-api--request (host method endpoint &optional params
-				  json-body callback)
+                                  json-body callback &rest args)
   "Make an async HTTP request to the Forgejo API.
 
 HOST is the instance base URL (e.g. \"https://codeberg.org\").
@@ -102,53 +175,121 @@ PARAMS is an alist of query parameters.
 JSON-BODY, when non-nil, is an alist to encode as the request body.
 CALLBACK is called with two arguments: (RESPONSE-DATA HEADERS-PLIST).
   RESPONSE-DATA is the parsed JSON.
-  HEADERS-PLIST contains :total-count and :link."
-  (let ((url-request-method method)
-        (url-request-extra-headers
-         `(("Authorization" . ,(encode-coding-string
-                                (concat "token " (forgejo-token host))
-                                'ascii))
-           ("Accept" . "application/json")
-           ,@(when json-body
-               '(("Content-Type" . "application/json")))))
-        (url-request-data
-         (when json-body
-           (encode-coding-string (json-encode json-body) 'utf-8)))
-        (url (forgejo-api--url host endpoint params)))
-    (url-retrieve
-     url
-     (lambda (status)
-       (unwind-protect
-           (let ((http-status (forgejo-api--response-status (current-buffer))))
-             (cond
-              ((and http-status (>= http-status 400))
-               (let* ((err-data (condition-case nil
-                                    (forgejo-api--parse-response (current-buffer))
-                                  (json-parse-error nil)))
-                      (err-msg (when (listp err-data)
-                                 (alist-get 'message err-data))))
-                 (message "Forgejo API HTTP %d: %s %s%s"
-                          http-status method endpoint
-                          (if err-msg (concat " - " err-msg) ""))))
-              ((plist-get status :error)
-               (message "Forgejo API error: %S" (plist-get status :error)))
-              (t
-               (when callback
-                 (let ((headers (forgejo-api--parse-headers (current-buffer)))
-                       (data (forgejo-api--parse-response (current-buffer))))
-                   (funcall callback data headers))))))
-         (kill-buffer (current-buffer))))
-     nil t)))
+  HEADERS-PLIST contains :total-count and :link.
+
+ARGS is a plist of keyword options:
+  :error-callback -- function called with an error plist on failure.
+    The plist contains :status, :method, :endpoint, :message, :data.
+    When omitted, errors are logged to *Messages*.
+  :if-none-match -- ETag value for conditional requests.
+  :if-modified-since -- date string for conditional requests.
+    On 304 Not Modified, CALLBACK receives nil data."
+  (let* ((error-callback (plist-get args :error-callback))
+         (if-none-match (plist-get args :if-none-match))
+         (if-modified-since (plist-get args :if-modified-since))
+         (completed (cons nil nil))
+         (timeout-timer nil)
+         (url-request-method method)
+         (url-request-extra-headers
+          `(("Authorization" . ,(encode-coding-string
+                                 (concat "token " (forgejo-token host))
+                                 'ascii))
+            ("Accept" . "application/json")
+            ,@(when json-body
+                '(("Content-Type" . "application/json")))
+            ,@(when if-none-match
+                `(("If-None-Match" . ,if-none-match)))
+            ,@(when if-modified-since
+                `(("If-Modified-Since" . ,if-modified-since)))))
+         (url-request-data
+          (when json-body
+            (encode-coding-string (json-encode json-body) 'utf-8)))
+         (url (forgejo-api--url host endpoint params))
+         (url-buf
+          (url-retrieve
+           url
+           (lambda (status)
+             (setcar completed t)
+             (when timeout-timer (cancel-timer timeout-timer))
+             (unwind-protect
+                 (let ((http-status (forgejo-api--response-status
+                                     (current-buffer))))
+                   (cond
+                    ((and http-status (>= http-status 400))
+                     (forgejo-api--check-rate-limit
+                      host (forgejo-api--parse-headers (current-buffer)))
+                     (let* ((err-data (condition-case nil
+                                          (forgejo-api--parse-response
+                                           (current-buffer))
+                                        (json-parse-error nil)))
+                            (err-msg (when (listp err-data)
+                                       (alist-get 'message err-data)))
+                            (error-info (forgejo-api--error-plist
+                                         http-status method endpoint
+                                         err-msg err-data)))
+                       (if error-callback
+                           (funcall error-callback error-info)
+                         (message "Forgejo API HTTP %d: %s %s%s"
+                                  http-status method endpoint
+                                  (if err-msg
+                                      (concat " - " err-msg) "")))))
+                    ((plist-get status :error)
+                     (let ((error-info
+                            (forgejo-api--error-plist
+                             nil method endpoint
+                             (format "%S" (plist-get status :error))
+                             nil)))
+                       (if error-callback
+                           (funcall error-callback error-info)
+                         (message "Forgejo API error: %S"
+                                  (plist-get status :error)))))
+                    ((and http-status (= http-status 304))
+                     (let ((headers (forgejo-api--parse-headers
+                                     (current-buffer))))
+                       (forgejo-api--check-rate-limit host headers)
+                       (when callback
+                         (funcall callback nil headers))))
+                    (t
+                     (let ((headers (forgejo-api--parse-headers
+                                     (current-buffer)))
+                           (data (forgejo-api--parse-response
+                                  (current-buffer))))
+                       (forgejo-api--check-rate-limit host headers)
+                       (when callback
+                         (funcall callback data headers))))))
+               (kill-buffer (current-buffer))))
+           nil t)))
+    (when (and forgejo-api-timeout url-buf)
+      (setq timeout-timer
+            (run-at-time
+             forgejo-api-timeout nil
+             (lambda ()
+               (unless (car completed)
+                 (setcar completed t)
+                 (when (buffer-live-p url-buf)
+                   (let ((proc (get-buffer-process url-buf)))
+                     (when proc (delete-process proc)))
+                   (kill-buffer url-buf))
+                 (let ((error-info (forgejo-api--error-plist
+                                    nil method endpoint
+                                    "Request timed out" nil)))
+                   (if error-callback
+                       (funcall error-callback error-info)
+                     (message "Forgejo API timeout: %s %s"
+                              method endpoint))))))))))
 
 ;;; Public wrappers
 
-(defun forgejo-api-get (host endpoint &optional params callback)
-  "GET ENDPOINT on HOST with query PARAMS, call CALLBACK with (data headers)."
-  (forgejo-api--request host "GET" endpoint params nil callback))
+(defun forgejo-api-get (host endpoint &optional params callback &rest args)
+  "GET ENDPOINT on HOST with query PARAMS, call CALLBACK with (data headers).
+ARGS accepts :error-callback for failure handling."
+  (apply #'forgejo-api--request host "GET" endpoint params nil callback args))
 
 (defun forgejo-api-get-all (host endpoint &optional params callback)
   "GET all pages from ENDPOINT on HOST, call CALLBACK with (all-data headers).
 Fetches pages sequentially until all results are collected.
+On mid-pagination failure, calls CALLBACK with partial data and
+headers tagged with :partial t.
 PARAMS should include a \"limit\" entry.  The \"page\" param is
 managed automatically."
   (let ((limit (or (cdr (assoc "limit" params)) "30"))
@@ -170,14 +311,22 @@ managed automatically."
                         (setq page (1+ page))
                         (fetch-page))
                     (when callback
-                      (funcall callback accum headers)))))))))
+                      (funcall callback accum headers)))))
+              :error-callback
+              (lambda (error-info)
+                (when callback
+                  (funcall callback accum
+                           (list :total-count nil :link nil
+                                 :partial t :error error-info))))))))
       (fetch-page))))
 
 (defun forgejo-api-get-paged (host endpoint params page-callback
                                    &optional done-callback)
   "GET all pages from ENDPOINT on HOST, calling PAGE-CALLBACK after each.
 PAGE-CALLBACK receives (PAGE-DATA HEADERS PAGE-NUMBER).
-DONE-CALLBACK receives (ALL-DATA HEADERS) when all pages are fetched."
+DONE-CALLBACK receives (ALL-DATA HEADERS) when all pages are fetched.
+On mid-pagination failure, calls DONE-CALLBACK with partial data and
+headers tagged with :partial t."
   (let ((limit (or (cdr (assoc "limit" params)) "50"))
         (accum nil)
         (page 1))
@@ -199,24 +348,69 @@ DONE-CALLBACK receives (ALL-DATA HEADERS) when all pages are fetched."
                         (setq page (1+ page))
                         (fetch-page))
                     (when done-callback
-                      (funcall done-callback accum headers)))))))))
+                      (funcall done-callback accum headers)))))
+              :error-callback
+              (lambda (error-info)
+                (when done-callback
+                  (funcall done-callback accum
+                           (list :total-count nil :link nil
+                                 :partial t :error error-info))))))))
       (fetch-page))))
 
-(defun forgejo-api-post (host endpoint &optional params json-body callback)
-  "POST to ENDPOINT on HOST with PARAMS and JSON-BODY, call CALLBACK."
-  (forgejo-api--request host "POST" endpoint params json-body callback))
+(defun forgejo-api-post (host endpoint &optional params json-body callback
+                              &rest args)
+  "POST to ENDPOINT on HOST with PARAMS and JSON-BODY, call CALLBACK.
+ARGS accepts :error-callback for failure handling."
+  (apply #'forgejo-api--request host "POST" endpoint params json-body
+         callback args))
 
-(defun forgejo-api-patch (host endpoint &optional json-body callback)
-  "PATCH ENDPOINT on HOST with JSON-BODY, call CALLBACK."
-  (forgejo-api--request host "PATCH" endpoint nil json-body callback))
+(defun forgejo-api-patch (host endpoint &optional json-body callback &rest args)
+  "PATCH ENDPOINT on HOST with JSON-BODY, call CALLBACK.
+ARGS accepts :error-callback for failure handling."
+  (apply #'forgejo-api--request host "PATCH" endpoint nil json-body
+         callback args))
 
-(defun forgejo-api-put (host endpoint &optional json-body callback)
-  "PUT ENDPOINT on HOST with JSON-BODY, call CALLBACK."
-  (forgejo-api--request host "PUT" endpoint nil json-body callback))
+(defun forgejo-api-put (host endpoint &optional json-body callback &rest args)
+  "PUT ENDPOINT on HOST with JSON-BODY, call CALLBACK.
+ARGS accepts :error-callback for failure handling."
+  (apply #'forgejo-api--request host "PUT" endpoint nil json-body
+         callback args))
 
-(defun forgejo-api-delete (host endpoint &optional json-body callback)
-  "DELETE ENDPOINT on HOST with optional JSON-BODY, call CALLBACK."
-  (forgejo-api--request host "DELETE" endpoint nil json-body callback))
+(defun forgejo-api-delete (host endpoint &optional json-body callback &rest args)
+  "DELETE ENDPOINT on HOST with optional JSON-BODY, call CALLBACK.
+ARGS accepts :error-callback for failure handling."
+  (apply #'forgejo-api--request host "DELETE" endpoint nil json-body
+         callback args))
+
+;;; Conditional requests
+
+(declare-function forgejo-db-get-cache-headers "forgejo-db.el"
+                  (host owner repo endpoint))
+(declare-function forgejo-db-set-cache-headers "forgejo-db.el"
+                  (host owner repo endpoint etag last-modified))
+
+(defun forgejo-api-get-conditional (host endpoint params
+                                         cache-key callback &rest args)
+  "GET with conditional headers from DB cache.
+CACHE-KEY is a list (HOST OWNER REPO ENDPOINT-NAME) for cache lookup.
+On 304, calls CALLBACK with nil data.  On 200, updates cached headers.
+ARGS are passed through to `forgejo-api-get'."
+  (let* ((cached (apply #'forgejo-db-get-cache-headers cache-key))
+         (etag (plist-get cached :etag))
+         (last-mod (plist-get cached :last-modified)))
+    (apply #'forgejo-api-get host endpoint params
+           (lambda (data headers)
+             (when data
+               (let ((new-etag (plist-get headers :etag))
+                     (new-last-mod (plist-get headers :last-modified)))
+                 (when (or new-etag new-last-mod)
+                   (apply #'forgejo-db-set-cache-headers
+                          (append cache-key
+                                  (list new-etag new-last-mod))))))
+             (when callback (funcall callback data headers)))
+           :if-none-match etag
+           :if-modified-since last-mod
+           args)))
 
 ;;; Instance settings
 
