@@ -61,10 +61,19 @@
 Each function receives the current buffer as its sole argument."
   :type '(repeat function))
 
+(defcustom forgejo-markdown-mode 'gfm-mode
+  "Major mode used for markdown highlighting.
+Applied in compose buffers and for fontifying comment bodies.
+Typical choices are `gfm-mode' (from `markdown-mode' package)
+and `markdown-ts-mode' (built-in, requires tree-sitter grammars)."
+  :type '(choice (function-item gfm-mode)
+                 (function-item markdown-ts-mode)
+                 (function :tag "Other"))
+  :group 'forgejo)
+
 (defcustom forgejo-compose-hook nil
   "Hook run in composition buffers after setup.
-Compose buffers already use `gfm-mode', so this is for extras
-like `flyspell-mode' or `visual-line-mode'."
+This is for extras like `flyspell-mode' or `visual-line-mode'."
   :type 'hook)
 
 

@@ -29,6 +29,7 @@
 (require 'markdown-mode)
 
 (declare-function forgejo-token "forgejo.el" (host-url))
+(defvar forgejo-markdown-mode)
 
 ;;; URL builders
 
@@ -188,10 +189,19 @@ free-text prefixes.  Returns the query string."
   "Keymap for `forgejo-compose-mode'.
 Unbinds C-c C-c so `string-edit-minor-mode' handles it.")
 
-(define-derived-mode forgejo-compose-mode gfm-mode "Forgejo Compose"
+(defvar forgejo-compose-mode-hook nil
+  "Hook run after `forgejo-compose-mode' setup.")
+
+(defun forgejo-compose-mode ()
   "Major mode for composing Forgejo comments.
-Inherits `gfm-mode' for markdown highlighting."
-  :group 'forgejo)
+Activates `forgejo-markdown-mode' for highlighting, then applies
+Forgejo-specific keybindings."
+  (funcall forgejo-markdown-mode)
+  (setq major-mode 'forgejo-compose-mode
+        mode-name "Forgejo Compose")
+  (use-local-map (make-composed-keymap forgejo-compose-mode-map
+                                       (current-local-map)))
+  (run-hooks 'forgejo-compose-mode-hook))
 
 (defun forgejo-utils-read-body (prompt &optional initial)
   "Read multi-line text with markdown highlighting and # completion.

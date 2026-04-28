@@ -199,8 +199,10 @@ Matches 7-40 character hex strings at word boundaries."
                'keymap forgejo-buffer--action-map))))))
 
 (defun forgejo-buffer--url-at-point ()
-  "Return the URL at point via `markdown-link-url'."
-  (markdown-link-url))
+  "Return the URL at point.
+Tries `markdown-link-url' if available, otherwise `thing-at-point'."
+  (or (and (fboundp 'markdown-link-url) (markdown-link-url))
+      (thing-at-point 'url)))
 
 ;;; Body rendering
 
@@ -209,7 +211,7 @@ Matches 7-40 character hex strings at word boundaries."
 Uses a null byte that won't appear in markdown text.")
 
 (defun forgejo-buffer--fontify-bodies (bodies)
-  "Fontify all BODIES in a single `gfm-view-mode' temp buffer.
+  "Fontify all BODIES in a single temp buffer using `forgejo-markdown-mode'.
 Returns a list of fontified strings in the same order.
 Much faster than fontifying each body in a separate buffer."
   (if (null bodies)
@@ -217,7 +219,7 @@ Much faster than fontifying each body in a separate buffer."
     (let ((sep forgejo-buffer--body-separator))
       (with-temp-buffer
         (insert "\n" (mapconcat #'identity bodies sep))
-        (gfm-view-mode)
+        (funcall forgejo-markdown-mode)
         (font-lock-ensure)
         (split-string (buffer-substring (+ (point-min) 1) (point-max))
                       sep)))))
