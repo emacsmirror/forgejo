@@ -337,11 +337,18 @@ With prefix arg FORCE-PUSH-P, force-push to update an existing PR."
           (target (if (string-match "\\`\\([^/]+\\)/\\(.+\\)\\'" choice)
                       (match-string 2 choice)
                     choice)))
-     (list remote
-           (let ((input (read-string (format "Topic (default: %s): " branch))))
-             (if (string-empty-p input) branch input))
-           target
-           current-prefix-arg)))
+     (let* ((pr-branch-p (string-match-p "\\`pr-[0-9]+\\'" branch))
+            (default-topic (unless pr-branch-p branch)))
+       (list remote
+             (if default-topic
+                 (let ((input (read-string (format "Topic (default: %s): " default-topic))))
+                   (if (string-empty-p input) default-topic input))
+               (let ((input (read-string "Topic: ")))
+                 (when (string-empty-p input)
+                   (user-error "Topic is required for pr-N branches"))
+                 input))
+             target
+             current-prefix-arg))))
   (let ((target (replace-regexp-in-string "\\`.+/" "" target)))
     (if force-push-p
         (forgejo-vc--git-push
