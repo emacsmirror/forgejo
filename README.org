@@ -18,7 +18,7 @@ Emacs front-end for [[https://forgejo.org][Forgejo]] instances (Codeberg, self-h
 =emacs-forgejo= is available via [[https://elpa.gnu.org/packages/forgejo.html][GNU ELPA]].
 
 #+begin_src emacs-lisp
-  (use-package forgejo-vc
+  (use-package forgejo
     :ensure t
     :custom
     (forgejo-hosts '(("https://codeberg.org")))
@@ -30,18 +30,8 @@ Emacs front-end for [[https://forgejo.org][Forgejo]] instances (Codeberg, self-h
     (forgejo-watch-filter-default "read:no"))
 #+end_src
 
-Store your token in =~/.authinfo.gpg=:
-
-#+begin_example
-machine codeberg.org login YOUR_USERNAME password YOUR_TOKEN
-#+end_example
-
-Or provide tokens inline:
-
-#+begin_src emacs-lisp
-  (setq forgejo-hosts '(("https://codeberg.org" "your-token")
-                         ("https://git.myorg.com" "other-token")))
-#+end_src
+Visit a codeberg/forgejo repo and call =M-x forgejo-vc=.  It will
+automatically handle the token creation.
 
 * Usage
 

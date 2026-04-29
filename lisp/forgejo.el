@@ -283,17 +283,25 @@ Falls back to \"https://HOSTNAME\" if not found."
     (user-error "Host %s not configured in `forgejo-hosts'"
                 (url-host (url-generic-parse-url host-url)))))
 
+(declare-function forgejo-create-token "forgejo-token.el" (&optional host-url))
+
 (defun forgejo-token (host-url)
   "Return the API token for HOST-URL.
 Resolution order: inline token from `forgejo-hosts', auth-source,
-`forgejo-token' variable."
+`forgejo-token' variable.  When no token is found, offers to
+create one via `forgejo-create-token'."
   (forgejo--validate-host host-url)
   (or (forgejo--hosts-token host-url)
       (and forgejo-token-use-auth-source
            (forgejo--auth-source-token host-url))
       forgejo-token
-      (user-error "No token for host %s; add to `forgejo-hosts' or auth-source"
-                  (url-host (url-generic-parse-url host-url)))))
+      (if (y-or-n-p (format "No token for %s.  Create one now?"
+                            (url-host (url-generic-parse-url host-url))))
+          (or (forgejo-create-token host-url)
+              (user-error "Token creation failed for %s"
+                          (url-host (url-generic-parse-url host-url))))
+        (user-error "No token for host %s"
+                    (url-host (url-generic-parse-url host-url))))))
 
 ;;; Top-level menu
 
