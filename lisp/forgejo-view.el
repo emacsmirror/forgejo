@@ -392,7 +392,8 @@ Restores point to RESTORE-LINE if given."
 
 (defun forgejo-view-toggle-pin ()
   "Toggle pin state of the current issue or PR.
-Works from both detail and list views."
+Works from both detail and list views.
+Updates the API, then updates pin_order in the DB."
   (interactive)
   (let* ((number (or (and (bound-and-true-p forgejo-view--data)
                           (alist-get 'number forgejo-view--data))
@@ -407,7 +408,9 @@ Works from both detail and list views."
              (pinned-p (and pin-order (> pin-order 0))))
         (forgejo-utils-toggle-pin
          host-url owner repo number pinned-p
-         (forgejo--post-action-callback))))))
+         (lambda ()
+           (forgejo-db-set-pin-order host owner repo number
+                                     (if pinned-p 0 1))))))))
 
 (defun forgejo-view-comment ()
   "Post a comment on the current item."

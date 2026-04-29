@@ -256,7 +256,7 @@ whether a `pull_request' field is present in the data."
                    (if pr 1 0)
                    (or .pin_order 0)
                    (forgejo-db--nullable .due_date)
-                   (if .is_locked 1 0)))))))))
+                   (if (eq .is_locked t) 1 0)))))))))
 
 (defun forgejo-db--like (s)
   "Wrap S in SQL LIKE wildcards."
@@ -455,6 +455,16 @@ FILTERS is a plist with keys:
            "SELECT DISTINCT owner, repo FROM issues WHERE host = ?
             ORDER BY owner, repo"
            (list host))))
+
+;;; Pin
+
+(defun forgejo-db-set-pin-order (host owner repo number pin-order)
+  "Set PIN-ORDER for issue NUMBER in HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
+  (forgejo-db--execute
+   "UPDATE issues SET pin_order = ?
+    WHERE host = ? AND owner = ? AND repo = ? AND number = ?"
+   (list pin-order host owner repo number)))
 
 ;;; Delete
 
