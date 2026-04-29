@@ -197,14 +197,17 @@ Each element is (NAME WIDTH-OR-FLOAT SORT . PROPS).")
 
 (defun forgejo-filter-list-entries (items)
   "Convert ITEMS (list of API alists) to `tabulated-list-entries'.
-Each entry is (NUMBER . [# STATE TITLE LABELS AUTHOR UPDATED])."
+Each entry is (NUMBER . [# STATE TITLE LABELS AUTHOR UPDATED]).
+Pinned items get a pin indicator on the number."
   (mapcar
    (lambda (item)
      (let-alist item
        (list .number
              (vector
               (propertize (number-to-string .number)
-                          'face 'forgejo-number-face)
+                          'face (if (and .pin_order (> .pin_order 0))
+                                    'warning
+                                  'forgejo-number-face))
               (forgejo-buffer--format-state .state)
               .title
               (forgejo-buffer--format-labels .labels)

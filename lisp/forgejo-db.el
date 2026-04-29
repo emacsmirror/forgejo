@@ -57,6 +57,9 @@
        closed_at TEXT,
        is_pull INTEGER DEFAULT 0,
        read INTEGER DEFAULT 0,
+       pin_order INTEGER DEFAULT 0,
+       due_date TEXT,
+       is_locked INTEGER DEFAULT 0,
        PRIMARY KEY (host, owner, repo, number))"
     "CREATE TABLE IF NOT EXISTS timeline_events (
        id INTEGER NOT NULL,
@@ -130,12 +133,13 @@ Detects stale schema and rebuilds the database if necessary."
   forgejo-db)
 
 (defun forgejo-db--stale-schema-p ()
-  "Return non-nil if the DB has columns that no longer exist in the schema."
+  "Return non-nil if the DB schema is outdated.
+Checks for columns added in the latest migration."
   (condition-case nil
       (let ((cols (mapcar #'cadr
                           (sqlite-select forgejo-db
                                          "PRAGMA table_info(issues)"))))
-        (and cols (member "body_html" cols)))
+        (and cols (not (member "pin_order" cols))))
     (error nil)))
 
 (defun forgejo-db--close ()
@@ -212,41 +216,47 @@ When IS-PULL is non-nil, mark all entries as pull requests regardless of
 whether a `pull_request' field is present in the data."
   (setq owner (downcase owner) repo (downcase repo))
   (forgejo-db--with-transaction
-   (let ((db (forgejo-db--ensure)))
-     (dolist (issue issues)
-       (let-alist issue
-         (let ((body (forgejo-db--nullable .body))
-	       (labels (forgejo-db--nullable .labels))
-	       (milestone (forgejo-db--nullable .milestone))
-	       (assignees (forgejo-db--nullable .assignees))
-	       (closed (forgejo-db--nullable .closed_at))
-	       (pr (or is-pull (forgejo-db--nullable .pull_request))))
-           ;; Track edits before overwriting
-           (when body
-             (forgejo-db--track-edit db host owner repo .number body))
-           (sqlite-execute
-            db
-            "INSERT INTO issues
+    (let ((db (forgejo-db--ensure)))
+      (dolist (issue issues)
+	(let-alist issue
+          (let ((body (forgejo-db--nullable .body))
+		(labels (forgejo-db--nullable .labels))
+		(milestone (forgejo-db--nullable .milestone))
+		(assignees (forgejo-db--nullable .assignees))
+		(closed (forgejo-db--nullable .closed_at))
+		(pr (or is-pull (forgejo-db--nullable .pull_request))))
+            ;; Track edits before overwriting
+            (when body
+              (forgejo-db--track-edit db host owner repo .number body))
+            (sqlite-execute
+             db
+             "INSERT INTO issues
               (id, host, owner, repo, number, title, state, body,
                user, labels, milestone, assignees, comments_count,
-               created_at, updated_at, closed_at, is_pull, read)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+               created_at, updated_at, closed_at, is_pull, read,
+               pin_order, due_date, is_locked)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             ON CONFLICT(host, owner, repo, number) DO UPDATE SET
               title=excluded.title, state=excluded.state, body=excluded.body,
               user=excluded.user, labels=excluded.labels, milestone=excluded.milestone,
               assignees=excluded.assignees, comments_count=excluded.comments_count,
               updated_at=excluded.updated_at, closed_at=excluded.closed_at,
-              is_pull=excluded.is_pull, read=0"
-            (list .id host owner repo .number .title .state body
-                  (alist-get 'login .user)
-                  (forgejo-db--encode-json (when (listp labels) labels))
-                  (when (listp milestone) (alist-get 'title milestone))
-                  (forgejo-db--encode-json
-                   (when (listp assignees)
-                     (mapcar (lambda (a) (alist-get 'login a)) assignees)))
-                  .comments
-                  .created_at .updated_at closed
-                  (if pr 1 0)))))))))
+              is_pull=excluded.is_pull, read=0,
+              pin_order=excluded.pin_order, due_date=excluded.due_date,
+              is_locked=excluded.is_locked"
+             (list .id host owner repo .number .title .state body
+                   (alist-get 'login .user)
+                   (forgejo-db--encode-json (when (listp labels) labels))
+                   (when (listp milestone) (alist-get 'title milestone))
+                   (forgejo-db--encode-json
+                    (when (listp assignees)
+                      (mapcar (lambda (a) (alist-get 'login a)) assignees)))
+                   .comments
+                   .created_at .updated_at closed
+                   (if pr 1 0)
+                   (or .pin_order 0)
+                   (forgejo-db--nullable .due_date)
+                   (if .is_locked 1 0)))))))))
 
 (defun forgejo-db--like (s)
   "Wrap S in SQL LIKE wildcards."
@@ -311,7 +321,7 @@ FILTERS is a plist with keys:
          (args (append (list host owner repo)
                        (cdr filter-result))))
     (forgejo-db--select
-     (format "SELECT %s FROM issues WHERE %s ORDER BY updated_at DESC"
+     (format "SELECT %s FROM issues WHERE %s ORDER BY pin_order DESC, updated_at DESC"
              forgejo-db--issue-columns
              (mapconcat #'identity clauses " AND "))
      args)))
@@ -323,12 +333,12 @@ FILTERS is a plist with keys:
   (setq owner (downcase owner) repo (downcase repo))
   (when (and events (listp events))
     (forgejo-db--with-transaction
-     (let ((db (forgejo-db--ensure)))
-       (dolist (event events)
-         (let-alist event
-           (sqlite-execute
-            db
-            "INSERT INTO timeline_events
+      (let ((db (forgejo-db--ensure)))
+	(dolist (event events)
+          (let-alist event
+            (sqlite-execute
+             db
+             "INSERT INTO timeline_events
               (id, host, owner, repo, issue_number, type, body,
                user, created_at, data)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -336,12 +346,12 @@ FILTERS is a plist with keys:
               type=excluded.type, body=excluded.body,
               user=excluded.user, created_at=excluded.created_at,
               data=excluded.data"
-            (list .id host owner repo number
-                  (forgejo-db--nullable .type)
-                  (forgejo-db--nullable .body)
-                  (alist-get 'login (forgejo-db--nullable .user))
-                  (forgejo-db--nullable .created_at)
-                  (forgejo-db--encode-json event)))))))))
+             (list .id host owner repo number
+                   (forgejo-db--nullable .type)
+                   (forgejo-db--nullable .body)
+                   (alist-get 'login (forgejo-db--nullable .user))
+                   (forgejo-db--nullable .created_at)
+                   (forgejo-db--encode-json event)))))))))
 
 (defun forgejo-db-get-timeline (host owner repo number)
   "Get cached timeline events for issue NUMBER in HOST/OWNER/REPO."
@@ -446,6 +456,21 @@ FILTERS is a plist with keys:
             ORDER BY owner, repo"
            (list host))))
 
+;;; Delete
+
+(defun forgejo-db-delete-issue (host owner repo number)
+  "Delete issue NUMBER and its timeline from the DB for HOST/OWNER/REPO."
+  (setq owner (downcase owner) repo (downcase repo))
+  (forgejo-db--with-transaction
+    (forgejo-db--execute
+     "DELETE FROM timeline_events
+      WHERE host = ? AND owner = ? AND repo = ? AND issue_number = ?"
+     (list host owner repo number))
+    (forgejo-db--execute
+     "DELETE FROM issues
+      WHERE host = ? AND owner = ? AND repo = ? AND number = ?"
+     (list host owner repo number))))
+
 ;;; Sync state tracking
 
 (defun forgejo-db-get-sync-time (host owner repo endpoint)
@@ -491,7 +516,7 @@ FILTERS is a plist with keys:
 (defconst forgejo-db--issue-columns
   "number, title, state, body, user, labels, milestone,
    assignees, comments_count, created_at, updated_at, closed_at, is_pull,
-   previous_body, read"
+   previous_body, read, pin_order, due_date, is_locked"
   "Column list for issue queries (deterministic order).")
 
 (defun forgejo-db--row-to-issue-alist (row)
@@ -499,7 +524,8 @@ FILTERS is a plist with keys:
 ROW must come from a query using `forgejo-db--issue-columns':
   0=number 1=title 2=state 3=body 4=user 5=labels
   6=milestone 7=assignees 8=comments_count 9=created_at
-  10=updated_at 11=closed_at 12=is_pull 13=previous_body 14=read"
+  10=updated_at 11=closed_at 12=is_pull 13=previous_body 14=read
+  15=pin_order 16=due_date 17=is_locked"
   (let ((labels (forgejo-db--decode-json (nth 5 row)))
         (assignees-raw (forgejo-db--decode-json (nth 7 row))))
     `((number . ,(nth 0 row))
@@ -517,7 +543,10 @@ ROW must come from a query using `forgejo-db--issue-columns':
       (closed_at . ,(nth 11 row))
       (pull_request . ,(when (= (or (nth 12 row) 0) 1) t))
       (previous_body . ,(nth 13 row))
-      (read . ,(or (nth 14 row) 0)))))
+      (read . ,(or (nth 14 row) 0))
+      (pin_order . ,(or (nth 15 row) 0))
+      (due_date . ,(nth 16 row))
+      (is_locked . ,(= (or (nth 17 row) 0) 1)))))
 
 (defconst forgejo-db--timeline-columns
   "id, type, body, user, created_at, data"
