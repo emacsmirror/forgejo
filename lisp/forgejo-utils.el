@@ -210,19 +210,10 @@ free-text prefixes.  Returns the query string."
   "Keymap for `forgejo-compose-mode'.
 Unbinds C-c C-c so `string-edit-minor-mode' handles it.")
 
-(defvar forgejo-compose-mode-hook nil
-  "Hook run after `forgejo-compose-mode' setup.")
-
-(defun forgejo-compose-mode ()
-  "Major mode for composing Forgejo comments.
-Activates `forgejo-markdown-mode' for highlighting, then applies
-Forgejo-specific keybindings."
-  (funcall forgejo-markdown-mode)
-  (setq major-mode 'forgejo-compose-mode
-        mode-name "Forgejo Compose")
-  (use-local-map (make-composed-keymap forgejo-compose-mode-map
-                                       (current-local-map)))
-  (run-hooks 'forgejo-compose-mode-hook))
+(define-minor-mode forgejo-compose-mode
+  "Minor mode for composing Forgejo comments.
+Layers Forgejo-specific keybindings over the active markdown mode."
+  :keymap forgejo-compose-mode-map)
 
 (defun forgejo-utils-read-body (prompt &optional initial)
   "Read multi-line text with markdown highlighting and # completion.
@@ -253,7 +244,9 @@ PROMPT is used in the header line.  Buffer has no read-only regions."
                        :abort-callback (lambda ()
                                          (setq result nil)
                                          (exit-recursive-edit))
-                       :major-mode-sym #'forgejo-compose-mode)
+                       :major-mode-sym (lambda ()
+                                         (funcall forgejo-markdown-mode)
+                                         (forgejo-compose-mode 1)))
           (recursive-edit))
       (remove-hook 'forgejo-compose-mode-hook hook-fn))
     result))
