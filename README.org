@@ -12,37 +12,21 @@ Emacs front-end for [[https://forgejo.org][Forgejo]] instances (Codeberg, self-h
 + =#= and =@= completion in composition buffers (=gfm-mode=)
 + Repository settings editor
 
-#+BEGIN_QUOTE
-Requires Emacs 29.1+ (native JSON, native SQLite), =markdown-mode=, and
-[[https://codeberg.org/thanosapollo/emacs-keymap-popup][keymap-popup]].
-#+END_QUOTE
-
 * Installation
 
-** use-package (Emacs 30+, recommended)
-
-Install =keymap-popup= first:
-
-#+begin_src emacs-lisp
-  (use-package keymap-popup
-    :vc (:url "https://codeberg.org/thanosapollo/emacs-keymap-popup"
-            :branch "master"
-            :rev :newest))
-#+end_src
-
-Then install =forgejo=:
+** use-package
+=emacs-forgejo= is available via [[https://elpa.gnu.org/packages/forgejo.html][GNU ELPA]].
 
 #+begin_src emacs-lisp
   (use-package forgejo-vc
-    :vc (:url "https://codeberg.org/thanosapollo/emacs-forgejo"
-	    :branch "master"
-            :rev :newest
-            :lisp-dir "lisp")
+    :ensure t
     :custom
     (forgejo-hosts '(("https://codeberg.org")))
-    (forgejo-watch-rules '(("thanosapollo/emacs-forgejo")
-                           ("guix/guix" . "state:open label:team-emacs")
-                           ("*" . "author:<your username>")))
+    ;; Example watch rules
+    (forgejo-watch-rules
+     '(("thanosapollo/emacs-forgejo")
+       ("guix/guix" . "state:open label:team-emacs")
+       ("*" . "author:<your username>")))
     (forgejo-watch-filter-default "read:no"))
 #+end_src
 
@@ -57,22 +41,6 @@ Or provide tokens inline:
 #+begin_src emacs-lisp
   (setq forgejo-hosts '(("https://codeberg.org" "your-token")
                          ("https://git.myorg.com" "other-token")))
-#+end_src
-
-** Manual
-
-Clone [[https://codeberg.org/thanosapollo/emacs-keymap-popup][keymap-popup]] and add both to your load path:
-
-#+begin_src emacs-lisp
-  (add-to-list 'load-path "/path/to/emacs-keymap-popup")
-  (add-to-list 'load-path "/path/to/emacs-forgejo/lisp")
-  (require 'forgejo-vc)
-#+end_src
-
-** Guix
-
-#+begin_src sh
-  guix package -f guix.scm
 #+end_src
 
 * Usage
