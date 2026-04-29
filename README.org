@@ -134,6 +134,15 @@ setup, passing the buffer as an argument:
 - fj.el takes a direct-API approach while emacs-forgejo uses a local SQLite cache as source of truth.
 - fj.el supports the fork/PR workflow while emacs-forgejo supports AGit-Flow.
 
+* Contributing
+This project is part of GNU ELPA.
+
+Contributions of ~15 lines or more require [[https://www.gnu.org/prep/maintain/html_node/Copyright-Papers.html][FSF copyright assignment]].
+
+#+BEGIN_QUOTE
+See [[https://codeberg.org/thanosapollo/emacs-forgejo/issues/17][#17]] for more.
+#+END_QUOTE
+
 * Screenshots
 
 #+caption: issue list
