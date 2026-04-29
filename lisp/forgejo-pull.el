@@ -61,7 +61,6 @@ Keys: :state :milestone :labels :author :page")
   :parent forgejo-tl-list-mode-map
   :group "Actions"
   "RET" ("View PR" forgejo-pull-view-at-point)
-  "x" ("Toggle open/close" forgejo-view-toggle-state)
   "b" ("Browse" forgejo-pull-browse-at-point)
   :group "Navigate"
   "g" ("Refresh" forgejo-pull-refresh)

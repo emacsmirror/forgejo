@@ -50,9 +50,17 @@
 
 ;;; Shared list keymap
 
+(declare-function forgejo-view-toggle-state "forgejo-view.el" ())
+(declare-function forgejo-view-toggle-pin "forgejo-view.el" ())
+(declare-function forgejo-view-delete-issue "forgejo-view.el" ())
+
 (keymap-popup-define forgejo-tl-list-mode-map
   "Shared bindings for all Forgejo list views."
   :parent tabulated-list-mode-map
+  :group "Actions"
+  "x" ("Toggle open/close" forgejo-view-toggle-state)
+  "P" ("Toggle pin" forgejo-view-toggle-pin)
+  "D" ("Delete" forgejo-view-delete-issue)
   :group "Navigate"
   "S" ("Sort" forgejo-tl-sort))
 

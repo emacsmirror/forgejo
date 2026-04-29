@@ -77,6 +77,27 @@ CALLBACK is called on success."
          (message "%sd %s/%s#%d" action owner repo number)
          (when callback (funcall callback)))))))
 
+;;; Pin toggle
+
+(defun forgejo-utils-toggle-pin (host-url owner repo number pinned-p callback)
+  "Toggle pin state of issue/PR NUMBER in OWNER/REPO on HOST-URL.
+PINNED-P is non-nil when the item is currently pinned.
+CALLBACK is called on success."
+  (let ((endpoint (format "repos/%s/%s/issues/%d/pin" owner repo number))
+        (action (if pinned-p "Unpin" "Pin")))
+    (when (y-or-n-p (format "%s %s/%s#%d? " action owner repo number))
+      (if pinned-p
+          (forgejo-api-delete
+           host-url endpoint nil
+           (lambda (_data _headers)
+             (message "Unpinned %s/%s#%d" owner repo number)
+             (when callback (funcall callback))))
+        (forgejo-api-post
+         host-url endpoint nil nil
+         (lambda (_data _headers)
+           (message "Pinned %s/%s#%d" owner repo number)
+           (when callback (funcall callback))))))))
+
 ;;; Filter prompt
 
 (defvar crm-separator)

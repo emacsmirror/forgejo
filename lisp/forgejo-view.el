@@ -247,6 +247,7 @@ Handles #N issue/PR refs and markdown URLs."
   "L" ("Add label" forgejo-view-add-label)
   "A" ("Add assignee" forgejo-view-add-assignee)
   "M" ("Set milestone" forgejo-view-set-milestone)
+  "P" ("Toggle pin" forgejo-view-toggle-pin)
   :group "Navigate"
   "RET" ("Follow link" forgejo-view-follow-link)
   "g" ("Refresh" forgejo-view-refresh)
@@ -389,6 +390,25 @@ Restores point to RESTORE-LINE if given."
        host-url forgejo-repo--owner forgejo-repo--name number state
        (forgejo--post-action-callback)))))
 
+(defun forgejo-view-toggle-pin ()
+  "Toggle pin state of the current issue or PR.
+Works from both detail and list views."
+  (interactive)
+  (let* ((number (or (and (bound-and-true-p forgejo-view--data)
+                          (alist-get 'number forgejo-view--data))
+                     (tabulated-list-get-id)))
+         (host-url forgejo-repo--host)
+         (host (url-host (url-generic-parse-url host-url)))
+         (owner forgejo-repo--owner)
+         (repo forgejo-repo--name))
+    (when number
+      (let* ((item (forgejo-db-get-issue host owner repo number))
+             (pin-order (alist-get 'pin_order item))
+             (pinned-p (and pin-order (> pin-order 0))))
+        (forgejo-utils-toggle-pin
+         host-url owner repo number pinned-p
+         (forgejo--post-action-callback))))))
+
 (defun forgejo-view-comment ()
   "Post a comment on the current item."
   (interactive)
@@ -521,14 +541,38 @@ On a comment, deletes the comment.  On the header, deletes the issue/PR."
         (format "comment %d" (plist-get node :id))
         (forgejo--post-action-callback)))
       ('header
-       (forgejo-view--delete
-        (format "repos/%s/%s/issues/%d"
-                forgejo-repo--owner forgejo-repo--name
-                (alist-get 'number forgejo-view--data))
-        (format "%s/%s#%d" forgejo-repo--owner forgejo-repo--name
-                (alist-get 'number forgejo-view--data))
-        (lambda () (quit-window 'kill))))
+       (let ((number (alist-get 'number forgejo-view--data))
+             (owner forgejo-repo--owner)
+             (repo forgejo-repo--name)
+             (host (url-host (url-generic-parse-url forgejo-repo--host))))
+         (forgejo-view--delete
+          (format "repos/%s/%s/issues/%d" owner repo number)
+          (format "%s/%s#%d" owner repo number)
+          (lambda ()
+            (forgejo-db-delete-issue host owner repo number)
+            (quit-window 'kill)))))
       (_ (user-error "No deletable item at point")))))
+
+(defun forgejo-view-delete-issue ()
+  "Delete the issue or PR at point in a list view.
+Removes from API, then from DB, then re-renders the list in place."
+  (interactive)
+  (when-let* ((number (tabulated-list-get-id)))
+    (let ((owner forgejo-repo--owner)
+          (repo forgejo-repo--name)
+          (host (url-host (url-generic-parse-url forgejo-repo--host)))
+          (buf (current-buffer)))
+      (forgejo-view--delete
+       (format "repos/%s/%s/issues/%d" owner repo number)
+       (format "%s/%s#%d" owner repo number)
+       (lambda ()
+         (forgejo-db-delete-issue host owner repo number)
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq tabulated-list-entries
+                   (cl-remove-if (lambda (e) (= (car e) number))
+                                 tabulated-list-entries))
+             (forgejo-tl-print t))))))))
 
 (defun forgejo-view--delete (endpoint description callback)
   "Delete ENDPOINT after confirming with DESCRIPTION.  Call CALLBACK on success."

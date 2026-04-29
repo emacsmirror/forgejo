@@ -61,7 +61,6 @@ Keys: :state :labels :milestone :author :query :page")
   :group "Actions"
   "RET" ("View issue" forgejo-issue-view-at-point)
   "c" ("Create issue" forgejo-issue-create)
-  "x" ("Toggle open/close" forgejo-view-toggle-state)
   "b" ("Browse" forgejo-issue-browse-at-point)
   :group "Navigate"
   "g" ("Refresh" forgejo-issue-refresh)
