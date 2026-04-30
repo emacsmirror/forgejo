@@ -276,6 +276,9 @@ When RESTORE-LINE is non-nil, go to that line after re-rendering."
         (list (cons "limit" (number-to-string forgejo-timeline-page-size)))
         (lambda (timeline _tl-headers)
           (forgejo-db-save-timeline host owner repo number timeline)
+          (forgejo-db-set-sync-time
+           host owner repo (format "timeline/%d" number)
+           (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
           (forgejo-view--re-render
            buf-name host-url host owner repo number
            #'forgejo-issue--render-detail restore-line)))))))

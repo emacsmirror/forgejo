@@ -548,6 +548,26 @@ When IS-USER-REPO is non-nil, mark it as a user repository."
       WHERE host = ? AND owner = ? AND repo = ? AND number = ?"
      (list host owner repo number))))
 
+;;; Stale timeline detection
+
+(defun forgejo-db-stale-timelines (host owner repo limit)
+  "Return issue numbers in HOST/OWNER/REPO with stale cached timelines.
+Only considers issues previously viewed (with a sync_state entry for
+their timeline).  Results are ordered by most recently updated first,
+capped at LIMIT."
+  (setq owner (downcase owner) repo (downcase repo))
+  (mapcar #'car
+          (forgejo-db--select
+           "SELECT i.number FROM issues i
+            JOIN sync_state s
+              ON s.host = i.host AND s.owner = i.owner AND s.repo = i.repo
+              AND s.endpoint = 'timeline/' || i.number
+            WHERE i.host = ? AND i.owner = ? AND i.repo = ?
+              AND i.updated_at > s.last_synced
+            ORDER BY i.updated_at DESC
+            LIMIT ?"
+           (list host owner repo limit))))
+
 ;;; Sync state tracking
 
 (defun forgejo-db-get-sync-time (host owner repo endpoint)

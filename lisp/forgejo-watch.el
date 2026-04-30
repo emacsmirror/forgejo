@@ -79,6 +79,15 @@ Each function receives one argument: the list of new issue/PR alists."
   :type 'hook
   :group 'forgejo)
 
+(defcustom forgejo-watch-timeline-limit 10
+  "Max timeline syncs per repo per poll cycle.
+During each watch poll, timelines are refreshed for previously-viewed
+issues whose metadata has changed since the last timeline sync.  This
+caps how many timeline fetches are made per repo to avoid excessive
+API calls."
+  :type 'integer
+  :group 'forgejo)
+
 (defcustom forgejo-watch-filter-default "read:no"
   "Default filter for `forgejo-watch-list'.
 Uses the same syntax as the interactive filter prompt.
@@ -151,7 +160,42 @@ RULE is \"owner/repo\" or (\"owner/repo\" . \"filter-query\")."
           host owner repo "watch"
           (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
          (run-hook-with-args 'forgejo-watch-hooks all-data)
-         (forgejo-watch--refresh-list-buffer host))))))
+         (forgejo-watch--refresh-list-buffer host))
+       (forgejo-watch--sync-timelines host-url host owner repo)))))
+
+;;; Background timeline sync
+
+(defvar forgejo-timeline-page-size)
+
+(defun forgejo-watch--sync-timelines (host-url host owner repo)
+  "Sync stale timelines for previously-viewed issues in HOST/OWNER/REPO.
+Fetches up to `forgejo-watch-timeline-limit' timelines sequentially."
+  (let ((numbers (forgejo-db-stale-timelines
+                  host owner repo forgejo-watch-timeline-limit)))
+    (when numbers
+      (forgejo-watch--sync-timeline-chain host-url host owner repo numbers))))
+
+(defun forgejo-watch--sync-timeline-chain (host-url host owner repo numbers)
+  "Fetch timeline for first of NUMBERS, then chain the rest.
+Each fetch saves to DB, records sync time, then fires the next."
+  (when numbers
+    (let* ((number (car numbers))
+           (rest (cdr numbers))
+           (endpoint (format "repos/%s/%s/issues/%d/timeline"
+                             owner repo number)))
+      (forgejo-api-get
+       host-url endpoint
+       (list (cons "limit" (number-to-string forgejo-timeline-page-size)))
+       (lambda (timeline _headers)
+         (when timeline
+           (forgejo-db-save-timeline host owner repo number timeline))
+         (forgejo-db-set-sync-time
+          host owner repo (format "timeline/%d" number)
+          (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
+         (if rest
+             (forgejo-watch--sync-timeline-chain
+              host-url host owner repo rest)
+           (forgejo-watch--refresh-list-buffer host)))))))
 
 (defun forgejo-watch--refresh-list-buffer (host)
   "Re-render the notification list buffer for HOST if visible."
