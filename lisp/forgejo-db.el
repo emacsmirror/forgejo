@@ -98,6 +98,21 @@
        name TEXT NOT NULL,
        description TEXT,
        is_user_repo INTEGER DEFAULT 0,
+       fork INTEGER DEFAULT 0,
+       archived INTEGER DEFAULT 0,
+       private INTEGER DEFAULT 0,
+       has_issues INTEGER DEFAULT 1,
+       has_pull_requests INTEGER DEFAULT 1,
+       has_wiki INTEGER DEFAULT 0,
+       has_projects INTEGER DEFAULT 0,
+       has_releases INTEGER DEFAULT 0,
+       has_actions INTEGER DEFAULT 0,
+       default_branch TEXT,
+       stars_count INTEGER DEFAULT 0,
+       forks_count INTEGER DEFAULT 0,
+       open_issues_count INTEGER DEFAULT 0,
+       language TEXT,
+       updated_at TEXT,
        PRIMARY KEY (host, owner, name))"
     "CREATE TABLE IF NOT EXISTS sync_state (
        host TEXT NOT NULL,
@@ -138,8 +153,8 @@ Checks for columns added in the latest migration."
   (condition-case nil
       (let ((cols (mapcar #'cadr
                           (sqlite-select forgejo-db
-                                         "PRAGMA table_info(issues)"))))
-        (and cols (not (member "pin_order" cols))))
+                                         "PRAGMA table_info(repos)"))))
+        (and cols (not (member "has_issues" cols))))
     (error nil)))
 
 (defun forgejo-db--close ()
@@ -426,19 +441,71 @@ FILTERS is a plist with keys:
 
 ;;; Repos
 
+(defun forgejo-db-save-repo (host repo &optional is-user-repo)
+  "Save REPO (API alist) for HOST.
+When IS-USER-REPO is non-nil, mark it as a user repository."
+  (let ((db (forgejo-db--ensure)))
+    (let-alist repo
+      (sqlite-execute
+       db
+       "INSERT INTO repos (host, owner, name, description, is_user_repo,
+          fork, archived, private, has_issues, has_pull_requests,
+          has_wiki, has_projects, has_releases, has_actions,
+          default_branch, stars_count, forks_count, open_issues_count,
+          language, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(host, owner, name) DO UPDATE SET
+          description=excluded.description,
+          is_user_repo=MAX(is_user_repo, excluded.is_user_repo),
+          fork=excluded.fork, archived=excluded.archived,
+          private=excluded.private, has_issues=excluded.has_issues,
+          has_pull_requests=excluded.has_pull_requests,
+          has_wiki=excluded.has_wiki, has_projects=excluded.has_projects,
+          has_releases=excluded.has_releases, has_actions=excluded.has_actions,
+          default_branch=excluded.default_branch,
+          stars_count=excluded.stars_count, forks_count=excluded.forks_count,
+          open_issues_count=excluded.open_issues_count,
+          language=excluded.language, updated_at=excluded.updated_at"
+       (list host
+             (downcase (alist-get 'login .owner))
+             (downcase .name)
+             (forgejo-db--nullable .description)
+             (if is-user-repo 1 0)
+             (if (eq .fork t) 1 0)
+             (if (eq .archived t) 1 0)
+             (if (eq .private t) 1 0)
+             (if (eq .has_issues t) 1 0)
+             (if (eq .has_pull_requests t) 1 0)
+             (if (eq .has_wiki t) 1 0)
+             (if (eq .has_projects t) 1 0)
+             (if (eq .has_releases t) 1 0)
+             (if (eq .has_actions t) 1 0)
+             (forgejo-db--nullable .default_branch)
+             (or .stars_count 0)
+             (or .forks_count 0)
+             (or .open_issues_count 0)
+             (forgejo-db--nullable .language)
+             (forgejo-db--nullable .updated_at))))))
+
 (defun forgejo-db-save-user-repos (host repos)
   "Save REPOS (list of API alists) as user repos for HOST."
-  (let ((db (forgejo-db--ensure)))
-    (dolist (repo repos)
-      (let-alist repo
-        (sqlite-execute
-         db
-         "INSERT OR REPLACE INTO repos (host, owner, name, description, is_user_repo)
-          VALUES (?, ?, ?, ?, 1)"
-         (list host
-               (downcase (alist-get 'login .owner))
-               (downcase .name)
-               (forgejo-db--nullable .description)))))))
+  (dolist (repo repos)
+    (forgejo-db-save-repo host repo t)))
+
+(defun forgejo-db-get-repo (host owner name)
+  "Return metadata alist for OWNER/NAME on HOST, or nil."
+  (setq owner (downcase owner) name (downcase name))
+  (when-let* ((row (car (forgejo-db--select
+                         "SELECT has_issues, has_pull_requests, has_wiki,
+                            archived, fork, default_branch
+                          FROM repos WHERE host = ? AND owner = ? AND name = ?"
+                         (list host owner name)))))
+    `((has_issues . ,(= (nth 0 row) 1))
+      (has_pull_requests . ,(= (nth 1 row) 1))
+      (has_wiki . ,(= (nth 2 row) 1))
+      (archived . ,(= (nth 3 row) 1))
+      (fork . ,(= (nth 4 row) 1))
+      (default_branch . ,(nth 5 row)))))
 
 (defun forgejo-db-get-user-repos (host)
   "Get cached user repo names for HOST as list of \"owner/name\" strings."
