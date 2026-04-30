@@ -131,7 +131,8 @@
   (let ((forgejo-hosts '(("https://codeberg.org")))
         (forgejo-token-use-auth-source nil)
         (forgejo-token nil))
-    (should-error (forgejo-token "https://codeberg.org") :type 'user-error)))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (_prompt) nil)))
+      (should-error (forgejo-token "https://codeberg.org") :type 'user-error))))
 
 ;;; Group 6: Header parsing with rate limits
 

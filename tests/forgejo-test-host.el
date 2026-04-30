@@ -66,8 +66,9 @@
   (let ((forgejo-hosts '(("https://codeberg.org")))
         (forgejo-token-use-auth-source nil)
         (forgejo-token nil))
-    (should-error (forgejo-token "https://codeberg.org")
-                  :type 'user-error)))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (_prompt) nil)))
+      (should-error (forgejo-token "https://codeberg.org")
+                    :type 'user-error))))
 
 (ert-deftest forgejo-test-host-token-validates-first ()
   "Token lookup validates host before searching."
