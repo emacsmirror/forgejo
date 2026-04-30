@@ -270,13 +270,22 @@ Handles #N issue/PR refs and markdown URLs."
 
 (defun forgejo-view-item (owner repo number)
   "View issue or PR NUMBER in OWNER/REPO.
-Checks the DB to determine if it's a PR, falls back to issue view."
-  (let ((cached (forgejo-db-get-issue
-                 (url-host (url-generic-parse-url forgejo-repo--host))
-                 owner repo number)))
-    (if (and cached (alist-get 'pull_request cached))
-        (forgejo-pull-view owner repo number)
-      (forgejo-issue-view owner repo number))))
+Checks the DB first, then the API if uncached."
+  (let* ((host (url-host (url-generic-parse-url forgejo-repo--host)))
+         (cached (forgejo-db-get-issue host owner repo number)))
+    (if cached
+        (if (alist-get 'pull_request cached)
+            (forgejo-pull-view owner repo number)
+          (forgejo-issue-view owner repo number))
+      (forgejo-api-get
+       forgejo-repo--host
+       (format "repos/%s/%s/issues/%d" owner repo number) nil
+       (lambda (data _headers)
+         (when data
+           (forgejo-db-save-issues host owner repo (list data))
+           (if (alist-get 'pull_request data)
+               (forgejo-pull-view owner repo number)
+             (forgejo-issue-view owner repo number))))))))
 
 ;;; List-view format
 
