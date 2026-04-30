@@ -107,6 +107,18 @@ When no buffer-local host is set, aggregates across all hosts."
              "SELECT DISTINCT owner, repo FROM issues WHERE host = ?"
              (list host))))))
 
+;;; Repo metadata sync
+
+(defun forgejo-repo-sync-metadata (host-url owner repo)
+  "Fetch and cache metadata for OWNER/REPO on HOST-URL.
+Calls GET /repos/{owner}/{repo} and saves to the DB."
+  (forgejo-api-get
+   host-url (format "repos/%s/%s" owner repo) nil
+   (lambda (data _headers)
+     (when data
+       (forgejo-db-save-repo
+        (url-host (url-generic-parse-url host-url)) data)))))
+
 ;;; Fetch user repos
 
 (defun forgejo-repo--fetch-user-repos ()

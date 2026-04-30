@@ -39,6 +39,10 @@
                   (&optional owner repo))
 (declare-function forgejo-api-post "forgejo-api.el"
                   (host endpoint &optional params json-body callback))
+(declare-function forgejo-db-get-repo "forgejo-db.el"
+                  (host owner name))
+(declare-function forgejo-repo-sync-metadata "forgejo-repo.el"
+                  (host-url owner repo))
 
 ;;; Repo counts (async, cached per-directory)
 
@@ -63,29 +67,56 @@
   "Return cached open PR count for the current repo, or nil."
   (cdr (gethash (forgejo-vc--ensure-repo-key) forgejo-vc--counts)))
 
+(defun forgejo-vc--repo-metadata ()
+  "Return cached repo metadata alist for the current repo, or nil."
+  (when-let* ((context (forgejo-vc--repo-from-remote))
+              (host-url (nth 0 context))
+              (host (url-host (url-generic-parse-url host-url)))
+              (owner (nth 1 context))
+              (repo (nth 2 context)))
+    (forgejo-db-get-repo host owner repo)))
+
+(defun forgejo-vc--no-issues-p ()
+  "Return non-nil when the current repo has issues disabled."
+  (when-let* ((meta (forgejo-vc--repo-metadata)))
+    (not (alist-get 'has_issues meta))))
+
+(defun forgejo-vc--no-pulls-p ()
+  "Return non-nil when the current repo has pull requests disabled."
+  (when-let* ((meta (forgejo-vc--repo-metadata)))
+    (not (alist-get 'has_pull_requests meta))))
+
 (defun forgejo-vc--fetch-counts ()
-  "Fetch open issue/PR counts for the current repo asynchronously."
+  "Fetch open issue/PR counts for the current repo asynchronously.
+Also syncs repo metadata if not yet cached."
   (when-let* ((context (forgejo-vc--repo-from-remote))
               (host (nth 0 context))
               (owner (nth 1 context))
               (repo (nth 2 context))
               (key (format "%s/%s" owner repo)))
-    (forgejo-api-get
-     host (format "repos/%s/%s/issues" owner repo)
-     '(("state" . "open") ("type" . "issues") ("limit" . "1"))
-     (lambda (_data headers)
-       (let ((existing (gethash key forgejo-vc--counts)))
-         (puthash key
-                  (cons (plist-get headers :total-count) (cdr existing))
-                  forgejo-vc--counts))))
-    (forgejo-api-get
-     host (format "repos/%s/%s/issues" owner repo)
-     '(("state" . "open") ("type" . "pulls") ("limit" . "1"))
-     (lambda (_data headers)
-       (let ((existing (gethash key forgejo-vc--counts)))
-         (puthash key
-                  (cons (car existing) (plist-get headers :total-count))
-                  forgejo-vc--counts))))))
+    (let ((hostname (url-host (url-generic-parse-url host))))
+      (unless (forgejo-db-get-repo hostname owner repo)
+        (forgejo-repo-sync-metadata host owner repo))
+      (when-let* ((meta (forgejo-db-get-repo hostname owner repo))
+                  ((alist-get 'has_issues meta)))
+        (forgejo-api-get
+         host (format "repos/%s/%s/issues" owner repo)
+         '(("state" . "open") ("type" . "issues") ("limit" . "1"))
+         (lambda (_data headers)
+           (let ((existing (gethash key forgejo-vc--counts)))
+             (puthash key
+                      (cons (plist-get headers :total-count) (cdr existing))
+                      forgejo-vc--counts)))))
+      (when-let* ((meta (forgejo-db-get-repo hostname owner repo))
+                  ((alist-get 'has_pull_requests meta)))
+        (forgejo-api-get
+         host (format "repos/%s/%s/issues" owner repo)
+         '(("state" . "open") ("type" . "pulls") ("limit" . "1"))
+         (lambda (_data headers)
+           (let ((existing (gethash key forgejo-vc--counts)))
+             (puthash key
+                      (cons (car existing) (plist-get headers :total-count))
+                      forgejo-vc--counts))))))))
 
 ;;; Git detection (pure: git command -> data)
 
@@ -531,17 +562,25 @@ and mark it as manually merged after a successful push."
   "Forgejo operations for the current repository."
   :group "View"
   "i" ((lambda ()
-         (if-let* ((n (forgejo-vc--issue-count)))
-             (format "Issues (%s)" (propertize (number-to-string n)
-                                               'face 'warning))
-           "Issues"))
-       forgejo-vc-issues)
+         (cond
+          ((forgejo-vc--no-issues-p) "Issues (disabled)")
+          ((forgejo-vc--issue-count)
+           (format "Issues (%s)" (propertize
+                                  (number-to-string (forgejo-vc--issue-count))
+                                  'face 'warning)))
+          (t "Issues")))
+       forgejo-vc-issues
+       :inapt-if (lambda () (forgejo-vc--no-issues-p)))
   "p" ((lambda ()
-         (if-let* ((n (forgejo-vc--pr-count)))
-             (format "Pull requests (%s)" (propertize (number-to-string n)
-                                                      'face 'forgejo-open-face))
-           "Pull requests"))
-       forgejo-vc-pulls)
+         (cond
+          ((forgejo-vc--no-pulls-p) "Pull requests (disabled)")
+          ((forgejo-vc--pr-count)
+           (format "Pull requests (%s)" (propertize
+                                         (number-to-string (forgejo-vc--pr-count))
+                                         'face 'forgejo-open-face)))
+          (t "Pull requests")))
+       forgejo-vc-pulls
+       :inapt-if (lambda () (forgejo-vc--no-pulls-p)))
   :group "PR"
   "s" ("Submit PR" forgejo-vc-submit :c-u "force push"
        :inapt-if (lambda () (forgejo-vc--no-remote-p)))
