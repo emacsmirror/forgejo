@@ -27,7 +27,6 @@
 
 (require 'cl-lib)
 (require 'ewoc)
-(require 'markdown-mode)
 (require 'forgejo)
 
 (defvar forgejo-repo--host)

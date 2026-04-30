@@ -26,7 +26,6 @@
 
 (require 'forgejo-api)
 (require 'forgejo-db)
-(require 'markdown-mode)
 
 (declare-function forgejo-token "forgejo.el" (host-url))
 (defvar forgejo-markdown-mode)

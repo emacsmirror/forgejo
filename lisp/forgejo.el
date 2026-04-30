@@ -6,7 +6,7 @@
 ;; Keywords: tools vc git forgejo
 ;; URL: https://codeberg.org/thanosapollo/emacs-forgejo
 ;; Version: 0.1.2
-;; Package-Requires: ((emacs "29.1") (markdown-mode "2.6") (keymap-popup "0.2.1"))
+;; Package-Requires: ((emacs "29.1") (keymap-popup "0.2.1"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -61,13 +61,19 @@
 Each function receives the current buffer as its sole argument."
   :type '(repeat function))
 
-(defcustom forgejo-markdown-mode 'gfm-mode
+(defcustom forgejo-markdown-mode
+  (cond
+   ((fboundp 'gfm-mode) 'gfm-mode)
+   ((fboundp 'markdown-ts-mode) 'markdown-ts-mode)
+   (t 'text-mode))
   "Major mode used for markdown highlighting.
 Applied in compose buffers and for fontifying comment bodies.
-Typical choices are `gfm-mode' (from `markdown-mode' package)
-and `markdown-ts-mode' (built-in, requires tree-sitter grammars)."
+Detected automatically: `gfm-mode' if `markdown-mode' is installed,
+then `markdown-ts-mode' (built-in, requires tree-sitter grammars),
+then `text-mode' as fallback."
   :type '(choice (function-item gfm-mode)
                  (function-item markdown-ts-mode)
+                 (function-item text-mode)
                  (function :tag "Other"))
   :group 'forgejo)
 
