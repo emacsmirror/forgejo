@@ -346,7 +346,6 @@ Reads the full ref from the `forgejo-full-ref' text property."
           (repo (nth 1 parsed))
           (number (nth 2 parsed)))
       (forgejo-db-mark-read forgejo-watch--host owner repo number)
-      (forgejo-watch--render forgejo-watch--host)
       (if (string= type "PR")
           (forgejo-pull-view owner repo number)
         (forgejo-issue-view owner repo number)))))
