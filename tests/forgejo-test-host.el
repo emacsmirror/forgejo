@@ -12,6 +12,7 @@
 
 (load (expand-file-name "../lisp/forgejo.el"
        (file-name-directory (or load-file-name buffer-file-name))))
+(setq forgejo-markdown-mode 'text-mode)
 
 ;;; Group 1: Host validation
 

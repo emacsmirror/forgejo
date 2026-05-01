@@ -11,6 +11,9 @@
 
 (require 'ert)
 
+(defvar forgejo-markdown-mode)
+(setq forgejo-markdown-mode 'text-mode)
+
 (defvar forgejo-test-load--dir
   (expand-file-name "../lisp/"
                     (file-name-directory (or load-file-name buffer-file-name)))
