@@ -10,13 +10,8 @@
 (require 'ert)
 (require 'cl-lib)
 
-(load (expand-file-name "../lisp/forgejo.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
 (setq forgejo-markdown-mode 'text-mode)
-(load (expand-file-name "../lisp/forgejo-utils.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
-(load (expand-file-name "../lisp/forgejo-vc.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
+(require 'forgejo-vc)
 
 ;;; Group 1: Refspec building
 

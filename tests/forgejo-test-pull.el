@@ -9,21 +9,8 @@
 (require 'ert)
 (require 'cl-lib)
 
-(load (expand-file-name "../lisp/forgejo.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
 (setq forgejo-markdown-mode 'text-mode)
-(load (expand-file-name "../lisp/forgejo-tl.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
-(load (expand-file-name "../lisp/forgejo-api.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
-(load (expand-file-name "../lisp/forgejo-buffer.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
-(load (expand-file-name "../lisp/forgejo-filter.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
-(load (expand-file-name "../lisp/forgejo-view.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
-(load (expand-file-name "../lisp/forgejo-pull.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
+(require 'forgejo-pull)
 
 ;;; Group 1: PR entry formatting
 

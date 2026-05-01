@@ -9,11 +9,9 @@
 (require 'ert)
 (require 'cl-lib)
 
-(load (expand-file-name "../lisp/forgejo.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
 (setq forgejo-markdown-mode 'text-mode)
-(load (expand-file-name "../lisp/forgejo-api.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
+(require 'forgejo)
+(require 'forgejo-api)
 
 ;;; Group 1: URL building
 

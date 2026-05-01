@@ -10,9 +10,8 @@
 (require 'ert)
 (require 'cl-lib)
 
-(load (expand-file-name "../lisp/forgejo.el"
-       (file-name-directory (or load-file-name buffer-file-name))))
 (setq forgejo-markdown-mode 'text-mode)
+(require 'forgejo)
 
 ;;; Group 1: Host validation
 
