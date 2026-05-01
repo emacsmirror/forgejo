@@ -36,8 +36,7 @@
 (require 'forgejo-utils)
 (require 'forgejo-api)
 (require 'forgejo-db)
-
-(declare-function forgejo-repo-read "forgejo-repo.el" ())
+(require 'forgejo-repo)
 
 (defvar forgejo-default-sort)
 (defvar forgejo-timeline-page-size)
