@@ -23,6 +23,8 @@
 
 ;;; Commentary:
 
+;; Unmaintained.  Feel free to fork.  See README.org.
+;;
 ;; Emacs front-end for Forgejo instances (Codeberg, self-hosted).
 ;;
 ;; Browse, filter, and manage issues and pull requests from Emacs.
@@ -30,7 +32,7 @@
 ;; cached in a local SQLite database so views render instantly after
 ;; the first sync.
 ;;
-;; Setup:
+;; Setup (for local use or a fork):
 ;;
 ;;   Configure your Forgejo instance(s):
 ;;

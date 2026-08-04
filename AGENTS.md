@@ -2,6 +2,14 @@
 
 Public guidance for contributors and coding agents working on `emacs-forgejo`.
 
+## Status
+
+**Unmaintained. Feel free to fork.**
+
+This matches the project `README.org`. There is no actively maintained
+upstream install path or release train from the original author. Keep or
+adapt the notes below only if you are forking or studying the code.
+
 ## Project
 
 `emacs-forgejo` is an Emacs 29.1+ client for Forgejo instances. It supports
@@ -64,13 +72,17 @@ make compile   # Byte-compile package sources
 make dev       # Compile, lint, compile tests, and run the full ERT suite
 ```
 
-Run `make dev` before submission. Add new source and test files to the Makefile's
-explicit `SRCS` and `TESTS` lists.
+Run `make dev` before proposing a change on a fork. Add new source and test
+files to the Makefile's explicit `SRCS` and `TESTS` lists.
 
 ## Contributions
 
-Send patches to <patches@thanosapollo.org> with a subject like
-`[PATCH emacs-forgejo] Short description`.
+This upstream is unmaintained. Prefer forking. Historical contact addresses for
+the original author:
 
-Send bugs and feature requests to <bugs@thanosapollo.org> with a subject like
-`[BUG emacs-forgejo] Short description`.
+- patches: <patches@thanosapollo.org> with subject like
+  `[PATCH emacs-forgejo] Short description`
+- bugs/features: <bugs@thanosapollo.org> with subject like
+  `[BUG emacs-forgejo] Short description`
+
+Do not treat those addresses as an active maintenance commitment.
