@@ -199,7 +199,7 @@ HOST is the hostname for DB lookups."
                      (lambda (_data _headers)
                        (forgejo-db--execute
                         "DELETE FROM labels WHERE host = ? AND owner = ? AND repo = ? AND id = ?"
-                        (list host owner repo id))
+                        (list host (downcase owner) (downcase repo) id))
                        (forgejo-settings--remove-label-from-issues
                         host owner repo name)
                        (message "Deleted label %s from %s/%s"
@@ -218,10 +218,12 @@ HOST is the hostname for DB lookups."
 
 (defun forgejo-settings--remove-label-from-issues (host owner repo label-name)
   "Remove LABEL-NAME from all cached issues in HOST/OWNER/REPO."
-  (let ((rows (forgejo-db--select
-               "SELECT number, labels FROM issues
-                WHERE host = ? AND owner = ? AND repo = ? AND labels IS NOT NULL"
-               (list host owner repo))))
+  (let* ((owner (downcase owner))
+         (repo (downcase repo))
+         (rows (forgejo-db--select
+                "SELECT number, labels FROM issues
+                 WHERE host = ? AND owner = ? AND repo = ? AND labels IS NOT NULL"
+                (list host owner repo))))
     (dolist (row rows)
       (let* ((number (nth 0 row))
              (labels-json (nth 1 row))

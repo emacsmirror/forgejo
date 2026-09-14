@@ -10,6 +10,8 @@
 (require 'forgejo-test-helper)
 (require 'forgejo)
 (require 'forgejo-db)
+(require 'forgejo-utils)
+(require 'forgejo-settings)
 
 ;;; Group 1: Schema
 
@@ -392,6 +394,138 @@
    (should (string= (forgejo-db-get-pr-target
                      "codeberg.org" "owner" "repo" "topic")
                     "origin/devel"))))
+
+;;; Cache updates through editing commands
+
+(defconst forgejo-test-db--edit-scopes
+  '(("forgejo.invalid" "owner" "repo")
+    ("other.invalid" "owner" "repo")
+    ("forgejo.invalid" "other" "repo")
+    ("forgejo.invalid" "owner" "other"))
+  "Namespaces sharing issue, comment and label IDs in editing tests.")
+
+(defun forgejo-test-db--seed-edits ()
+  "Seed colliding IDs in separate namespaces through the public cache API."
+  (let ((labels (list (forgejo-test-label)
+                      (forgejo-test-label '((id . 2) (name . "feature")))
+                      (forgejo-test-label '((id . 3) (name . "BUG"))))))
+    (dolist (scope forgejo-test-db--edit-scopes)
+      (apply #'forgejo-db-save-issues
+             (append scope (list (list (forgejo-test-issue `((labels . ,labels)))
+                                       (forgejo-test-pr `((labels . ,labels)))))))
+      (apply #'forgejo-db-save-timeline
+             (append scope (list 42 (forgejo-test-timeline 10 11))))
+      (apply #'forgejo-db-save-labels (append scope (list labels))))))
+
+(defun forgejo-test-db--edit-snapshot ()
+  "Return all seeded issue, comment and label rows in each namespace."
+  (mapcar (lambda (scope)
+            (list :issue (apply #'forgejo-db-get-issue (append scope '(42)))
+                  :pull (apply #'forgejo-db-get-issue (append scope '(43)))
+                  :timeline (apply #'forgejo-db-get-timeline (append scope '(42)))
+                  :labels (apply #'forgejo-db-get-labels scope)))
+          forgejo-test-db--edit-scopes))
+
+(defun forgejo-test-db--check-edit (command field)
+  "Check COMMAND updates only FIELD in its namespace after API success."
+  (dolist (names '(("owner" "repo") ("OwNeR" "RePo")))
+    (dolist (success '(nil t))
+      (forgejo-test-with-temp-db
+        (forgejo-test-db--seed-edits)
+        (let* ((before (forgejo-test-db--edit-snapshot))
+               (expected (copy-tree before))
+               (comment (eq command #'forgejo-utils-edit-comment))
+               (endpoint (format "repos/%s/%s/issues/%s"
+                                 (car names) (cadr names)
+                                 (if comment "comments/10" "42")))
+               request done)
+          (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "Updated"))
+                    ((symbol-function 'forgejo-utils-read-body)
+                     (lambda (&rest _) "Updated"))
+                    ((symbol-function 'forgejo-api-patch)
+                     (lambda (host path body callback &rest _)
+                       (should (equal (list host path body)
+                                      (list "https://forgejo.invalid" endpoint
+                                            (list (cons field "Updated")))))
+                       (setq request callback))))
+            (funcall command "https://forgejo.invalid" (car names) (cadr names)
+                     (if comment 10 42) "Original" (lambda () (setq done t))))
+          (should (functionp request))
+          (should-not done)
+          (should (equal before (forgejo-test-db--edit-snapshot)))
+          (forgejo-api--act-on-response
+           (if success '(:kind success :status 200)
+             '(:kind http-error :status 500 :message "Rejected"))
+           "https://forgejo.invalid" "PATCH" endpoint request nil)
+          (when success
+            (if comment
+                (setf (nth 2 (car (plist-get (car expected) :timeline))) "Updated")
+              (setf (alist-get field (plist-get (car expected) :issue)) "Updated")))
+          (should (eq done success))
+          (should (equal expected (forgejo-test-db--edit-snapshot))))))))
+
+(ert-deftest forgejo-test-db-edit-title-case ()
+  "Title edits normalize cache keys without crossing namespaces."
+  (forgejo-test-db--check-edit #'forgejo-utils-edit-title 'title))
+
+(ert-deftest forgejo-test-db-edit-body-case ()
+  "Body edits normalize cache keys without crossing namespaces."
+  (forgejo-test-db--check-edit #'forgejo-utils-edit-body 'body))
+
+(ert-deftest forgejo-test-db-edit-comment-case ()
+  "Comment edits normalize cache keys without crossing namespaces."
+  (forgejo-test-db--check-edit #'forgejo-utils-edit-comment 'body))
+
+(defun forgejo-test-db--without-bug (snapshot)
+  "Return SNAPSHOT with only the target repository's bug label removed."
+  (let* ((copy (copy-tree snapshot))
+         (target (car copy)))
+    (dolist (key '(:issue :pull))
+      (setf (alist-get 'labels (plist-get target key))
+            (cl-remove-if (lambda (label) (equal (alist-get 'name label) "bug"))
+                          (alist-get 'labels (plist-get target key)))))
+    copy))
+
+(ert-deftest forgejo-test-db-edit-delete-label-case ()
+  "The label deletion command updates both caches only after API success."
+  (dolist (names '(("owner" "repo") ("OwNeR" "RePo")))
+    (dolist (success '(nil t))
+      (forgejo-test-with-temp-db
+        (forgejo-test-db--seed-edits)
+        (let* ((before (forgejo-test-db--edit-snapshot))
+               (expected (if success (forgejo-test-db--without-bug before) before))
+               (endpoint (format "repos/%s/%s/labels/1" (car names) (cadr names)))
+               (forgejo-settings--labels-map (make-sparse-keymap))
+               request)
+          (when success
+            (setf (plist-get (car expected) :labels)
+                  (cl-remove-if (lambda (row) (= (car row) 1))
+                                (plist-get (car expected) :labels))))
+          (forgejo-settings--build-labels-map
+           "https://forgejo.invalid" (car names) (cadr names) "forgejo.invalid")
+          (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "bug"))
+                    ((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                    ((symbol-function 'forgejo-api-delete)
+                     (lambda (host path body callback &rest _)
+                       (should (equal (list host path body)
+                                      (list "https://forgejo.invalid" endpoint nil)))
+                       (setq request callback))))
+            (call-interactively (keymap-lookup forgejo-settings--labels-map "d")))
+          (should (functionp request))
+          (should (equal before (forgejo-test-db--edit-snapshot)))
+          (forgejo-api--act-on-response
+           (if success '(:kind success :status 204)
+             '(:kind http-error :status 500 :message "Rejected"))
+           "https://forgejo.invalid" "DELETE" endpoint request nil)
+          (should (equal expected (forgejo-test-db--edit-snapshot))))))))
+
+(ert-deftest forgejo-test-db-edit-remove-label-case ()
+  "Label cleanup normalizes both its SELECT and UPDATE repository keys."
+  (forgejo-test-with-temp-db
+    (forgejo-test-db--seed-edits)
+    (let ((expected (forgejo-test-db--without-bug (forgejo-test-db--edit-snapshot))))
+      (forgejo-settings--remove-label-from-issues "forgejo.invalid" "OwNeR" "RePo" "bug")
+      (should (equal expected (forgejo-test-db--edit-snapshot))))))
 
 (provide 'forgejo-test-db)
 ;;; forgejo-test-db.el ends here
