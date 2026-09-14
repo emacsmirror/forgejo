@@ -60,6 +60,7 @@
             nativeBuildInputs = [
               emacsWithPackages
               pkgs.gnumake
+              pkgs.git
             ];
             dontConfigure = true;
 
