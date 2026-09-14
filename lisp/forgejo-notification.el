@@ -353,12 +353,20 @@ Marks the notification as read on both the local DB and the server."
           (forgejo-issue-view owner repo number))))))
 
 (defun forgejo-notification-browse-at-point ()
-  "Open the notification subject in the browser."
+  "Open the notification's issue or pull request in the browser.
+Use the buffer's full host URL, falling back to the configured URL
+for its hostname or HTTPS when no URL is configured."
   (interactive)
-  (when-let* ((parsed (forgejo-notification--parse-ref-at-point)))
+  (when-let* ((entry (tabulated-list-get-entry))
+              (parsed (forgejo-notification--parse-ref-at-point)))
     (pcase-let ((`(,owner ,repo ,number) parsed))
-      (browse-url (format "https://%s/%s/%s/issues/%d"
-                          forgejo-notification--host owner repo number)))))
+      (let ((browse-fn (if (string= (aref entry 0) "PR")
+                           #'forgejo-utils-browse-pull
+                         #'forgejo-utils-browse-issue))
+            (host-url (or forgejo-notification--host-url
+                          (forgejo--host-url-for-hostname
+                           forgejo-notification--host))))
+        (funcall browse-fn host-url owner repo number)))))
 
 ;;; Mark read/unread/pin
 
