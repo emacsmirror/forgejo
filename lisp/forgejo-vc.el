@@ -167,12 +167,16 @@ Also syncs repo metadata if not yet cached."
 (defun forgejo-vc--all-forge-remotes ()
   "Return git remotes for hosts configured in `forgejo-hosts'.
 Remotes whose host is not configured (e.g. a GitLab or GitHub
-mirror) are ignored.  Each element is (HOST OWNER REPO REMOTE-NAME)."
+mirror) are ignored.  Each element is (HOST-URL OWNER REPO REMOTE-NAME).
+HOST-URL is the configured web URL, independent of the Git transport."
   (cl-loop for remote in (forgejo-vc--remotes)
            for url = (forgejo-vc--remote-url remote)
            for parsed = (and url (forgejo-vc--parse-remote-url url))
-           when (and parsed (forgejo--host-configured-p (car parsed)))
-           collect (append parsed (list remote))))
+           for entry = (and parsed
+                            (forgejo--host-entry
+                             (url-host (url-generic-parse-url (car parsed)))))
+           when entry
+           collect (cons (car entry) (append (cdr parsed) (list remote)))))
 
 (defvar forgejo-vc--selected-remotes (make-hash-table :test 'equal)
   "Selected remote name per repo root directory.")
