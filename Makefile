@@ -5,11 +5,14 @@ NIX := $(shell command -v nix 2>/dev/null)
 ENV_MAKE = $(MAKE) --no-print-directory
 ifeq ($(FORGEJO_ENV_WRAPPED),)
 ifneq ($(NIX),)
-ENV_MAKE = nix develop path:$(CURDIR) --command env FORGEJO_ENV_WRAPPED=1 $(MAKE) --no-print-directory
+ENV_MAKE = nix develop "$(CURDIR)" --command env FORGEJO_ENV_WRAPPED=1 $(MAKE) --no-print-directory
 endif
 endif
 
 EMACS_CMD ?= emacs
+EMACSCLIENT ?= emacsclient
+
+-include local.mk
 
 SRCS = lisp/forgejo.el lisp/forgejo-api.el lisp/forgejo-db.el \
        lisp/forgejo-filter.el lisp/forgejo-utils.el \
@@ -19,9 +22,9 @@ SRCS = lisp/forgejo.el lisp/forgejo-api.el lisp/forgejo-db.el \
        lisp/forgejo-token.el lisp/forgejo-alert.el lisp/forgejo-watch.el \
        lisp/forgejo-notification.el lisp/forgejo-ol.el
 
-TEST_HELPERS = tests/forgejo-test-helper.el
+TEST_HELPERS = admin/forgejo-dev.el tests/forgejo-test-helper.el
 
-TESTS = tests/forgejo-test-load.el tests/forgejo-test-api.el \
+TESTS = tests/forgejo-test-dev.el tests/forgejo-test-load.el tests/forgejo-test-api.el \
         tests/forgejo-test-db.el tests/forgejo-test-host.el \
         tests/forgejo-test-buffer.el tests/forgejo-test-filter.el \
         tests/forgejo-test-issue.el tests/forgejo-test-pull.el \
@@ -31,7 +34,7 @@ TESTS = tests/forgejo-test-load.el tests/forgejo-test-api.el \
 SELECTOR ?= t
 ERT_OPTS ?=
 
-BATCH = $(EMACS_CMD) -Q --batch -L lisp -L tests
+BATCH = $(EMACS_CMD) -Q --batch -L lisp -L tests -L admin
 
 .PHONY: all compile do-compile compile-tests do-compile-tests test do-test lint do-lint clean dev do-dev load test-env
 
@@ -70,8 +73,9 @@ lint:
 
 do-lint:
 	@echo "Running checkdoc..."
-	@for f in $(SRCS); do \
-	  $(BATCH) --eval "(checkdoc-file \"$$f\")" || exit 1; \
+	@set -eu; for f in $(SRCS) admin/forgejo-dev.el; do \
+	  output=$$($(BATCH) --eval "(checkdoc-file \"$$f\")" 2>&1) || { printf '%s\n' "$$output"; exit 1; }; \
+	  if test -n "$$output"; then printf '%s\n' "$$output"; exit 1; fi; \
 	done
 
 dev:
@@ -79,39 +83,9 @@ dev:
 
 do-dev: do-compile do-lint do-compile-tests do-test
 
-load: clean
-	@emacsclient --eval "(progn \
-	  (add-to-list 'load-path \"$(CURDIR)/lisp\") \
-	  (dolist (sym '(forgejo-map forgejo-tl-list-mode-map \
-	               forgejo-issue-list-mode-map forgejo-pull-list-mode-map \
-	               forgejo-pull-view-mode-map forgejo-issue-view-mode-map \
-	               forgejo-repo-search-mode-map forgejo-watch-list-mode-map \
-	               forgejo-notification-list-mode-map \
-	               forgejo-view-mode-map forgejo-view-diff-map \
-	               forgejo-compose-mode-map forgejo-buffer-diff-map \
-	               forgejo-vc-map forgejo-buffer-ref-map \
-	               forgejo-buffer-commit-map)) \
-	    (when (boundp sym) (makunbound sym))))" > /dev/null
-	@for f in $(SRCS); do \
-	  emacsclient --eval "(load-file \"$(CURDIR)/$$f\")" > /dev/null || \
-	    printf "\033[31mFAIL\033[0m $$f\n"; \
-	done
-	@emacsclient --eval "(dolist (buf (buffer-list)) \
-	  (with-current-buffer buf \
-	    (cond ((derived-mode-p 'forgejo-issue-list-mode) \
-	           (use-local-map forgejo-issue-list-mode-map)) \
-	          ((derived-mode-p 'forgejo-pull-list-mode) \
-	           (use-local-map forgejo-pull-list-mode-map)) \
-	          ((derived-mode-p 'forgejo-pull-view-mode) \
-	           (use-local-map forgejo-pull-view-mode-map)) \
-	          ((derived-mode-p 'forgejo-issue-view-mode) \
-	           (use-local-map forgejo-issue-view-mode-map)) \
-	          ((derived-mode-p 'forgejo-notification-list-mode) \
-	           (use-local-map forgejo-notification-list-mode-map)) \
-	          ((and (derived-mode-p 'diff-mode) \
-	                (bound-and-true-p forgejo-diff--pr-number)) \
-	           (use-local-map forgejo-view-diff-map)))))" > /dev/null
-	@printf "\033[32mLoaded all modules into Emacs\033[0m\n"
+load:
+	@$(EMACSCLIENT) --eval '(progn (load "$(CURDIR)/admin/forgejo-dev.el" nil t t) (forgejo-dev-load "$(CURDIR)" (quote ($(foreach f,$(SRCS),"$(f)")))))' > /dev/null
+	@printf "Loaded all modules into Emacs\n"
 
 test-env:
 	@$(BATCH) --eval "(loaddefs-generate \"$(CURDIR)/lisp\" \"$(CURDIR)/lisp/forgejo-autoloads.el\")"
@@ -119,4 +93,4 @@ test-env:
 	@$(EMACS_CMD) -Q -L lisp -l forgejo-autoloads
 
 clean:
-	rm -f *.elc lisp/*.elc tests/*.elc lisp/forgejo-autoloads.el
+	rm -f *.elc lisp/*.elc tests/*.elc admin/*.elc lisp/forgejo-autoloads.el

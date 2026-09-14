@@ -24,13 +24,15 @@
           emacs = pkgs.emacs;
           emacsPackages = pkgs.emacsPackagesFor emacs;
 
-          source = lib.cleanSourceWith {
-            src = ./.;
-            filter = path: type:
-              let name = baseNameOf path;
-              in !(name == ".test-results"
-                   || lib.hasSuffix ".elc" name
-                   || lib.hasSuffix "~" name);
+          # Keep local overrides, credentials and generated files out of the store.
+          source = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions (
+              [ ./Makefile ]
+              ++ map (file: ./. + "/${file}")
+                (lib.splitString "\n" (lib.removeSuffix "\n"
+                  (builtins.readFile ./admin/sources)))
+            );
           };
 
           keymapPopupVersion = "0.3.1";
@@ -39,9 +41,10 @@
             pname = "keymap-popup";
             version = keymapPopupVersion;
             src = pkgs.fetchurl {
-              url = "https://elpa.gnu.org/packages/keymap-popup-${keymapPopupVersion}.tar";
-              hash = "sha256-C+ECWpChsO6MUG+oAPJDhZruWphkxy7VLe9YFAzShFQ=";
+              url = "https://elpa.gnu.org/packages/keymap-popup-${keymapPopupVersion}.tar.lz";
+              hash = "sha256-gljSXx0mrtFL+ep5MqRaG01benpUhlyn7CB1Qb50ONw=";
             };
+            nativeBuildInputs = [ pkgs.lzip ];
             packageRequires = [ ];
           };
 
@@ -72,7 +75,7 @@
                 "$XDG_DATA_HOME" "$XDG_STATE_HOME"
               EMACS_CMD=emacs \
                 FORGEJO_ENV_WRAPPED=1 \
-                make test
+                make dev
               runHook postBuild
             '';
 
