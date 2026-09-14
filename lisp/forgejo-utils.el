@@ -427,7 +427,7 @@ CURRENT-TITLE is pre-filled.  CALLBACK is called on success."
            (forgejo-db--execute
             "UPDATE issues SET title = ?
              WHERE host = ? AND owner = ? AND repo = ? AND number = ?"
-            (list title host owner repo number)))
+            (list title host (downcase owner) (downcase repo) number)))
          (message "Updated title of %s/%s#%d" owner repo number)
          (when callback (funcall callback)))))))
 
@@ -446,7 +446,7 @@ CURRENT-BODY is pre-filled in the editor.  CALLBACK is called on success."
          (forgejo-db--execute
           "UPDATE issues SET body = ?
            WHERE host = ? AND owner = ? AND repo = ? AND number = ?"
-          (list body host owner repo number))
+          (list body host (downcase owner) (downcase repo) number))
          (message "Updated body of %s/%s#%d" owner repo number)
          (when callback (funcall callback)))))))
 
@@ -465,7 +465,7 @@ CURRENT-BODY is pre-filled in the editor.  CALLBACK is called on success."
          (forgejo-db--execute
           "UPDATE timeline_events SET body = ?
            WHERE host = ? AND owner = ? AND repo = ? AND id = ?"
-          (list body host owner repo comment-id))
+          (list body host (downcase owner) (downcase repo) comment-id))
          (message "Updated comment %d in %s/%s" comment-id owner repo)
          (when callback (funcall callback)))))))
 
