@@ -78,6 +78,4 @@ See README.org for reload limitations and the non-Nix fallback.
 ## Contributions
 
 Keep reports and patches focused on reproducible behavior. Include the relevant
-test commands and their results. Contributions of roughly 15 lines or more
-require [FSF copyright assignment](https://www.gnu.org/prep/maintain/html_node/Copyright-Papers.html);
-see [the project discussion](https://codeberg.org/thanosapollo/emacs-forgejo/issues/17).
+test commands and their results.
