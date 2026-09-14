@@ -326,26 +326,38 @@
 ;;; Pagination evidence
 
 (defun forgejo-test-api--pages (helper pages &optional limit)
-  "Call HELPER with mocked PAGES and optional pagination LIMIT.
-Return (DATA HEADERS REQUESTS PAGE-NUMBERS)."
-  (let (result result-headers requests page-numbers)
+  "Call HELPER with queued mocked PAGES and optional page-size LIMIT.
+Return (DATA HEADERS REQUESTS PAGE-NUMBERS PAGE-RESULTS)."
+  (let (result result-headers requests page-numbers page-results pending completed)
     (cl-letf (((symbol-function 'forgejo-api-get)
                (lambda (_host _endpoint params callback &rest args)
                  (let ((page (string-to-number (cdr (assoc "page" params)))))
                    (push page requests)
                    (should (<= page (length pages)))
                    (let ((response (nth (1- page) pages)))
-                     (if (eq (car response) :error)
-                         (funcall (plist-get args :error-callback) (cadr response))
-                       (funcall callback (car response) (cadr response))))))))
+                     (push (lambda ()
+                             (if (eq (car response) :error)
+                                 (funcall (plist-get args :error-callback)
+                                          (cadr response))
+                               (funcall callback (car response) (cadr response))))
+                           pending))))))
       (let ((done (lambda (data headers)
-                    (setq result data result-headers headers)))
+                    (should-not completed)
+                    (setq completed t result data result-headers headers)))
             (params `(("limit" . ,(or limit "50")))))
         (if (eq helper 'forgejo-api-get-all)
             (funcall helper "https://forgejo.invalid" "items" params done)
           (funcall helper "https://forgejo.invalid" "items" params
-                   (lambda (_data _headers page) (push page page-numbers)) done))))
-    (list result result-headers (nreverse requests) (nreverse page-numbers))))
+                   (lambda (data headers page)
+                     (should-not completed)
+                     (push page page-numbers)
+                     (push (list data headers page) page-results)) done)))
+      ;; Dispatch after each request returns, like the asynchronous transport.
+      (while pending
+        (funcall (pop pending))))
+    (should completed)
+    (list result result-headers (nreverse requests) (nreverse page-numbers)
+          (nreverse page-results))))
 
 (ert-deftest forgejo-test-api-pagination-capped-pages ()
   "Both helpers follow capped pages using total or Link evidence."
@@ -423,14 +435,39 @@ Return (DATA HEADERS REQUESTS PAGE-NUMBERS)."
                (cadr (forgejo-test-api--pages helper (list (list '(((id . 1))) headers))))
                :partial)))))
 
-(ert-deftest forgejo-test-api-pagination-page-budget ()
-  "Both helpers bound progress when headers never certify completion."
-  (let ((forgejo-api-max-pages 2))
-    (dolist (helper '(forgejo-api-get-all forgejo-api-get-paged))
-      (let ((result (forgejo-test-api--pages
-                     helper '(((((id . 1))) nil) ((((id . 2))) nil)))))
-        (should (equal (nth 2 result) '(1 2)))
-        (should (plist-get (cadr result) :partial))))))
+(ert-deftest forgejo-test-api-pagination-without-page-ceiling ()
+  "Both helpers fetch past 1000 pages until response evidence ends the list."
+  (dolist (helper '(forgejo-api-get-all forgejo-api-get-paged))
+    (dolist (evidence '(total link headerless))
+      (let* ((count 1001)
+             (items (cl-loop for id from 1 to count collect `((id . ,id))))
+             (pages
+              (cl-loop for item in items for page from 1
+                       collect
+                       (list (list item)
+                             (pcase evidence
+                               ('total (list :total-count count))
+                               ('link
+                                (list :link
+                                      (format "<https://forgejo.invalid/items?page=%d>; rel=\"%s\""
+                                              (if (< page count) (1+ page) (1- page))
+                                              (if (< page count) "next" "prev"))))))))
+             (responses (if (eq evidence 'headerless)
+                            (append pages '((nil nil)))
+                          pages))
+             (numbers (number-sequence 1 (length responses)))
+             (result (forgejo-test-api--pages helper responses)))
+        (should (equal (car result) items))
+        (should-not (plist-get (cadr result) :partial))
+        (should-not (plist-get (cadr result) :error))
+        (when (eq evidence 'total)
+          (should (= (plist-get (cadr result) :total-count) count)))
+        (should (equal (nth 2 result) numbers))
+        (when (eq helper 'forgejo-api-get-paged)
+          (should (equal (nth 3 result) numbers))
+          (should (equal (nth 4 result)
+                         (cl-loop for response in responses for page from 1
+                                  collect (append response (list page))))))))))
 
 (provide 'forgejo-test-api)
 ;;; forgejo-test-api.el ends here

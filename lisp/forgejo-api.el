@@ -435,12 +435,6 @@ ARGS is a plist of keyword options:
 ARGS accepts :error-callback for failure handling."
   (apply #'forgejo-api--request host "GET" endpoint params nil callback args))
 
-(defcustom forgejo-api-max-pages 1000
-  "Maximum pages fetched by a single paginated request.
-Reaching this limit with more results pending yields a partial result."
-  :type 'natnum
-  :group 'forgejo)
-
 (defun forgejo-api--next-page (link)
   "Return the next page number from LINK, nil if absent, or `invalid'.
 Only read the page parameter; never send credentials to a linked URL."
@@ -464,8 +458,8 @@ PAGE-CALLBACK receives (PAGE-DATA HEADERS PAGE-NUMBER).
 DONE-CALLBACK receives (ALL-DATA HEADERS) when pagination ends.
 Follow total-count and Link evidence, not the requested page size.
 Without pagination headers, continue until an empty page.
-On request failure, inconsistent evidence, duplicate items, or reaching
-`forgejo-api-max-pages', return useful data with headers tagged :partial t.
+On request failure, inconsistent evidence, or duplicate items, return
+useful data with headers tagged :partial t.
 Offset pagination is not a snapshot: undetectable concurrent changes may
 still omit items even when the reported total is satisfied."
   (let ((params (assoc-delete-all "page" (copy-alist params)))
@@ -513,13 +507,10 @@ still omit items even when the reported total is satisfied."
                   (cond
                    (inconsistent (finish headers t))
                    ((not more) (finish headers))
-                   ((>= page forgejo-api-max-pages) (finish headers t))
                    (t (setq page (1+ page)) (fetch-page))))))
             :error-callback
             (lambda (error-info) (finish last-headers t error-info)))))
-      (if (> forgejo-api-max-pages 0)
-          (fetch-page)
-        (finish nil t)))))
+      (fetch-page))))
 
 (defun forgejo-api-post (host endpoint &optional params json-body callback
                               &rest args)
