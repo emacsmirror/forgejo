@@ -9,6 +9,9 @@
 
 (require 'forgejo-test-helper)
 (require 'forgejo-buffer)
+(require 'forgejo-review)
+(require 'forgejo-view)
+(require 'forgejo-pull)
 
 ;;; Group 1: State formatting
 
@@ -89,6 +92,129 @@
          (nodes (forgejo-buffer--build-nodes issue nil)))
     (should (= (length nodes) 1))
     (should (eq (plist-get (car nodes) :type) 'header))))
+
+;;; Review decisions
+
+(defconst forgejo-test-buffer--review-decisions
+  '(("APPROVED" "approved" forgejo-review-approved-face)
+    ("REQUEST_CHANGES" "requested changes" forgejo-review-rejected-face)
+    ("COMMENT" "commented" forgejo-review-comment-face)
+    ("FUTURE_STATE" "reviewed" shadow)
+    (nil "reviewed" shadow))
+  "Review states, displayed verbs and faces for timeline regressions.")
+
+(defun forgejo-test-buffer--review-event (state)
+  "Return a body-bearing timeline review with STATE."
+  (forgejo-test-comment
+   31 `((type . "review") (review_id . 3) (review_state . ,state)
+        (body . "Review body: keep this text."))))
+
+(ert-deftest forgejo-test-buffer-review-decision-nodes ()
+  "Threadless review nodes retain decisions and comment action identity."
+  (dolist (case forgejo-test-buffer--review-decisions)
+    (ert-info ((format "Review state %S" (car case)))
+      (let* ((event (forgejo-test-buffer--review-event (car case)))
+             (nodes (forgejo-buffer--node-review event "commenter" (list event)))
+             (node (car nodes)))
+        (should (= (length nodes) 1))
+        (should (eq (plist-get node :type) 'comment))
+        (should (plist-member node :review-state))
+        (should (equal (plist-get node :review-state) (car case)))
+        (should (= (plist-get node :id) 31))
+        (should (equal (plist-get node :author) "commenter"))
+        (should (equal (plist-get node :body) (alist-get 'body event)))
+        (should (equal (plist-get node :created-at)
+                       (alist-get 'created_at event)))))))
+
+(ert-deftest forgejo-test-buffer-review-decision-rendered ()
+  "Rendered reviews show the decision, body, author, time and comment ID."
+  (dolist (case forgejo-test-buffer--review-decisions)
+    (ert-info ((format "Review state %S" (car case)))
+      (with-temp-buffer
+        (forgejo-pull-view-mode)
+        (let* ((event (forgejo-test-buffer--review-event (car case)))
+               (nodes (forgejo-buffer--build-nodes
+                       (forgejo-test-detail-pr) (list event))))
+          (forgejo-buffer--fontify-node-bodies nodes)
+          (forgejo-view--populate-ewoc nodes)
+          (goto-char (ewoc-location (ewoc-nth forgejo-view--ewoc 1)))
+          (should (looking-at
+                   (regexp-quote (concat "commenter " (nth 1 case) " "))))
+          (should (eq (get-text-property (point) 'face)
+                      'forgejo-comment-author-face))
+          (should (eq (get-text-property (+ (point) (length "commenter "))
+                                         'face)
+                      (nth 2 case)))
+          (should (search-forward
+                   (forgejo-buffer--relative-time (alist-get 'created_at event))
+                   (line-end-position) t))
+          (should (eq (get-text-property (1- (point)) 'face) 'shadow))
+          (should (search-forward (alist-get 'body event) nil t))
+          (should (= (forgejo-view--comment-id-at-point) 31)))))))
+
+(ert-deftest forgejo-test-buffer-review-decision-ordinary-comment ()
+  "Ordinary comments keep their node, edited marker, text and actions."
+  (let* ((event (forgejo-test-comment
+                 32 '((updated_at . "2026-01-02T00:00:00Z"))))
+         (node (forgejo-buffer--node-comment event "commenter")))
+    (should-not (plist-member node :review-state))
+    (should (equal node
+                   '(:type comment :id 32 :author "commenter" :body "Comment 32"
+                     :created-at "2026-01-01T00:00:00Z"
+                     :updated-at "2026-01-02T00:00:00Z")))
+    (with-temp-buffer
+      (forgejo-pull-view-mode)
+      (forgejo-view--populate-ewoc (list node))
+      (goto-char (point-min))
+      (should (looking-at "commenter commented "))
+      (should (eq (get-text-property (+ (point) (length "commenter ")) 'face)
+                  'shadow))
+      (should (search-forward "(edited)" (line-end-position) t))
+      (should (search-forward "Comment 32" nil t))
+      (should (= (forgejo-view--comment-id-at-point) 32)))))
+
+(ert-deftest forgejo-test-buffer-review-decision-threaded ()
+  "Threaded reviews retain decision rendering and actionable thread links."
+  (dolist (case forgejo-test-buffer--review-decisions)
+    (ert-info ((format "Review state %S" (car case)))
+      (let* ((event (forgejo-test-buffer--review-event (car case)))
+             (timeline (list event
+                             '((id . 33) (type . "review_comment")
+                               (review_id . 3) (path . "lisp/example.el")
+                               (position . 2) (original_position . 1)
+                               (body . "Inline comment"))))
+             (nodes (forgejo-buffer--build-nodes
+                     (forgejo-test-detail-pr) timeline))
+             (node (cadr nodes)))
+        (should (= (length nodes) 2))
+        (should (eq (plist-get node :type) 'review-link))
+        (should (equal (plist-get node :review-state) (car case)))
+        (should (equal (plist-get node :body) (alist-get 'body event)))
+        (should (equal (plist-get node :threads)
+                       '((:count 1 :path "lisp/example.el" :position 2
+                          :original-position 1 :diff-hunk nil :resolved nil))))
+        (with-temp-buffer
+          (forgejo-pull-view-mode)
+          (forgejo-buffer--fontify-node-bodies nodes)
+          (forgejo-view--populate-ewoc nodes)
+          (goto-char (ewoc-location (ewoc-nth forgejo-view--ewoc 1)))
+          (should (looking-at
+                   (regexp-quote (concat "commenter " (nth 1 case) " "))))
+          (should (eq (get-text-property (+ (point) (length "commenter "))
+                                         'face)
+                      (nth 2 case)))
+          (should (search-forward "[1 comment on example.el]" nil t))
+          (let ((pos (1- (point))))
+            (should (= (get-text-property pos 'forgejo-review-id) 3))
+            (should (equal (get-text-property pos 'forgejo-review-path)
+                           "lisp/example.el"))
+            (should (= (get-text-property pos 'forgejo-review-position) 2))
+            (should (= (get-text-property pos 'forgejo-review-opos) 1))
+            (should (eq (get-text-property pos 'keymap)
+                        forgejo-buffer--action-map)))
+          (should (search-forward "(unresolved)" nil t))
+          (should (search-forward (alist-get 'body event) nil t))
+          (should-not (forgejo-view--comment-id-at-point)))))))
 
 ;;; Group 6: Clean body
 
