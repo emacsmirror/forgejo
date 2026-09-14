@@ -61,12 +61,14 @@
               ((symbol-function 'forgejo-db-close-missing)
                (lambda (&rest _args) (setq close-called t)))
               ((symbol-function 'forgejo-db-set-sync-time)
-               (lambda (&rest _args) (setq sync-called t))))
+               (lambda (_host _owner _repo key _time) (setq sync-called key))))
       (forgejo-pull--sync "https://codeberg.org" "codeberg.org"
                           "owner" "repo" '(:state "open" :labels "bug")
                           " *forgejo-test-missing*" t)
       (should-not close-called)
-      (should sync-called))))
+      (should (equal sync-called
+                     (forgejo-filter-sync-key "pulls"
+                                              '(:state "open" :labels "bug")))))))
 
 (ert-deftest forgejo-test-pull-sync-partial-does-not-finalize ()
   "Partial forced syncs must not close missing PRs or advance sync time."
@@ -78,7 +80,7 @@
               ((symbol-function 'forgejo-db-close-missing)
                (lambda (&rest _args) (setq close-called t)))
               ((symbol-function 'forgejo-db-set-sync-time)
-               (lambda (&rest _args) (setq sync-called t))))
+               (lambda (_host _owner _repo key _time) (setq sync-called key))))
       (forgejo-pull--sync "https://codeberg.org" "codeberg.org"
                           "owner" "repo" '(:state "open")
                           " *forgejo-test-missing*" t)

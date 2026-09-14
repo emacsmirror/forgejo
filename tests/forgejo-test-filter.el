@@ -130,5 +130,16 @@
         (should (string= (aref cols 2) "Test issue"))
         (should (string-match-p "alice" (aref cols 4)))))))
 
+(ert-deftest forgejo-test-filter-sync-key-query-scope ()
+  "Cursor keys are canonical and distinguish every supported filter."
+  (let ((broad (forgejo-filter-sync-key "issues" '(:state "open"))))
+    (should-not (equal broad "issues"))
+    (should-not (equal broad (forgejo-filter-sync-key "pulls" '(:state "open"))))
+    (dolist (change '((:state "closed") (:labels "bug") (:milestone "v1")
+                      (:author "alice") (:query "fix") (:since "2026-01-01") (:page 2)))
+      (should-not (equal broad (forgejo-filter-sync-key "issues" (append change '(:state "open"))))))
+    (should (equal (forgejo-filter-sync-key "issues" '(:state "open" :labels "bug"))
+                   (forgejo-filter-sync-key "issues" '(:labels "bug" :state "open"))))))
+
 (provide 'forgejo-test-filter)
 ;;; forgejo-test-filter.el ends here

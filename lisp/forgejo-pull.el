@@ -98,10 +98,13 @@ FILTERS is the active filter plist."
 The DB is updated before re-rendering.  HOST-URL is the instance.
 HOST is the hostname.  FILTERS is the active filter plist.  Use the
 issues endpoint with type=pulls for incremental sync.  When FORCE is
-nil, use `since' for incremental sync.  When FORCE is non-nil, fetch
-all and mark missing PRs as closed."
-  (let* ((since (unless force
-                  (forgejo-db-get-sync-time host owner repo "pulls")))
+nil, use the cursor for this exact query via `since'.  When FORCE is
+non-nil, fetch all matching PRs.  Only a complete, unfiltered open fetch
+may mark missing PRs as closed."
+  (let* ((sync-key (forgejo-filter-sync-key "pulls" filters))
+         (sync-start (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
+         (since (unless force
+                  (forgejo-db-get-sync-time host owner repo sync-key)))
          (api-filters (if since
                           (plist-put (copy-sequence filters) :since since)
 			filters))
@@ -129,9 +132,7 @@ all and mark missing PRs as closed."
            (let ((numbers (mapcar (lambda (p) (alist-get 'number p)) all-data)))
              (forgejo-db-close-missing host owner repo numbers t)))
          (unless partial
-           (forgejo-db-set-sync-time host owner repo "pulls"
-                                     (format-time-string "%Y-%m-%dT%H:%M:%SZ"
-                                                         nil t)))
+           (forgejo-db-set-sync-time host owner repo sync-key sync-start))
          (when (buffer-live-p (get-buffer buf-name))
            (with-current-buffer buf-name
              (forgejo-pull--render-from-db

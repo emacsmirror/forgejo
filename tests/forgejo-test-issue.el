@@ -8,6 +8,7 @@
 
 (require 'forgejo-test-helper)
 (require 'forgejo-issue)
+(require 'forgejo-pull)
 
 ;;; Group 1: Entry conversion
 
@@ -61,12 +62,14 @@
               ((symbol-function 'forgejo-db-close-missing)
                (lambda (&rest _args) (setq close-called t)))
               ((symbol-function 'forgejo-db-set-sync-time)
-               (lambda (&rest _args) (setq sync-called t))))
+               (lambda (_host _owner _repo key _time) (setq sync-called key))))
       (forgejo-issue--sync "https://codeberg.org" "codeberg.org"
                            "owner" "repo" '(:state "open" :labels "bug")
                            " *forgejo-test-missing*" t)
       (should-not close-called)
-      (should sync-called))))
+      (should (equal sync-called
+                     (forgejo-filter-sync-key "issues"
+                                              '(:state "open" :labels "bug")))))))
 
 (ert-deftest forgejo-test-issue-sync-partial-does-not-finalize ()
   "Partial forced syncs must not close missing issues or advance sync time."
@@ -78,7 +81,7 @@
               ((symbol-function 'forgejo-db-close-missing)
                (lambda (&rest _args) (setq close-called t)))
               ((symbol-function 'forgejo-db-set-sync-time)
-               (lambda (&rest _args) (setq sync-called t))))
+               (lambda (_host _owner _repo key _time) (setq sync-called key))))
       (forgejo-issue--sync "https://codeberg.org" "codeberg.org"
                            "owner" "repo" '(:state "open")
                            " *forgejo-test-missing*" t)
@@ -153,6 +156,127 @@
         (kill-buffer buf))
       (when (buffer-live-p other)
         (kill-buffer other)))))
+
+;;; Cache synchronization journeys
+
+(ert-deftest forgejo-test-issue-and-pull-filtered-reopen ()
+  "A narrow fetch cannot hide old unseen or changed items on broad reopen."
+  (dolist (type '(issue pull))
+    (dolist (previous-sync '(nil "2026-01-01T00:00:00Z"))
+      (forgejo-test-with-temp-db
+        (let* ((sync (intern (format "forgejo-%s--sync" type)))
+               (open-list (intern (format "forgejo-%s-list" type)))
+               (kind (if (eq type 'pull) "pulls" "issues"))
+               (buf-name (format "*forgejo-%s: owner/repo*" kind))
+               (forgejo-hosts '(("https://forgejo.invalid")))
+               (forgejo-issue-default-filter '("state:open"))
+               (forgejo-pull-default-filter '("state:open"))
+               (items (mapcar
+                       (lambda (number)
+                         (forgejo-test-issue
+                          `((id . ,number) (number . ,number)
+                            (title . ,(format "Item %s" number))
+                            (updated_at . "2026-02-01T00:00:00Z")
+                            (labels . ,(and (= number 1) (list (forgejo-test-label))))
+                            (pull_request . ,(and (eq type 'pull) '((merged . :false)))))))
+                       '(1 2 3)))
+               requests)
+          ;; Item 2 is unseen; item 3 changed outside the narrow label query.
+          (forgejo-db-save-issues
+           "forgejo.invalid" "owner" "repo"
+           (list (forgejo-test-alist-merge (nth 2 items) '((title . "Stale")))))
+          ;; Legacy shared cursors may already contain narrow-query coverage.
+          (forgejo-db-set-sync-time
+           "forgejo.invalid" "owner" "repo" kind "2099-01-01T00:00:00Z")
+          (when previous-sync
+            (forgejo-db-set-sync-time
+             "forgejo.invalid" "owner" "repo"
+             (forgejo-filter-sync-key kind '(:state "open")) previous-sync))
+          (unwind-protect
+              (save-window-excursion
+                (cl-letf (((symbol-function 'forgejo-api-get)
+                           (lambda (_host endpoint params callback &rest _args)
+                             (when (string-suffix-p "/issues" endpoint)
+                               (push params requests)
+                               (let* ((since (cdr (assoc "since" params)))
+                                      (label (cdr (assoc "labels" params)))
+                                      (data (cl-remove-if-not
+                                             (lambda (item)
+                                               (and (or (not label) (= (alist-get 'number item) 1))
+                                                    (or (not since)
+                                                        (string-lessp since (alist-get 'updated_at item)))))
+                                             items)))
+                                 (funcall callback data (list :total-count (length data))))))))
+                  (funcall sync "https://forgejo.invalid" "forgejo.invalid"
+                           "owner" "repo" '(:state "open" :labels "bug") buf-name t)
+                  (should-not (forgejo-db-get-issue "forgejo.invalid" "owner" "repo" 2))
+                  (should (equal (alist-get 'title (forgejo-db-get-issue
+                                                    "forgejo.invalid" "owner" "repo" 3)) "Stale"))
+                  ;; Exercise the public ordinary reopen, not a forced refresh.
+                  (funcall open-list "owner" "repo")
+                  (should (equal (cdr (assoc "since" (car requests))) previous-sync))
+                  (should-not (assoc "labels" (car requests)))
+                  (should (forgejo-db-get-issue "forgejo.invalid" "owner" "repo" 2))
+                  (should (equal (alist-get 'title (forgejo-db-get-issue
+                                                    "forgejo.invalid" "owner" "repo" 3)) "Item 3"))))
+            (when-let* ((buf (get-buffer buf-name))) (kill-buffer buf))))))))
+
+(ert-deftest forgejo-test-issue-and-pull-pagination-cache-safety ()
+  "Capped pages preserve open items; incomplete pages cannot finalize."
+  (dolist (type '(issue pull))
+    (dolist (incomplete '(nil t))
+      (forgejo-test-with-temp-db
+        (let* ((sync (intern (format "forgejo-%s--sync" type)))
+               (kind (if (eq type 'pull) "pulls" "issues"))
+               (key (forgejo-filter-sync-key kind '(:state "open")))
+               (old-time "2026-01-01T00:00:00Z")
+               (items (mapcar
+                       (lambda (number)
+                         (forgejo-test-issue
+                          `((id . ,number) (number . ,number)
+                            (pull_request . ,(and (eq type 'pull) '((merged . :false)))))))
+                       '(1 2 3)))
+               requests)
+          (forgejo-db-save-issues "forgejo.invalid" "owner" "repo" items)
+          (forgejo-db-set-sync-time "forgejo.invalid" "owner" "repo" key old-time)
+          (cl-letf (((symbol-function 'forgejo-api-get)
+                     (lambda (_host endpoint params callback &rest _args)
+                       (when (string-suffix-p "/issues" endpoint)
+                         (let ((page (string-to-number (cdr (assoc "page" params)))))
+                           (push page requests)
+                           (should (<= page 2))
+                           (funcall callback
+                                    (if (= page 1) (seq-take items 2)
+                                      (unless incomplete (nthcdr 2 items)))
+                                    (if (= page 1)
+                                        '(:total-count 3 :link "<https://forgejo.invalid/items?page=2>; rel=\"next\"")
+                                      '(:total-count 3))))))))
+            (funcall sync "https://forgejo.invalid" "forgejo.invalid"
+                     "owner" "repo" '(:state "open") " *forgejo-test-absent*" t))
+          (should (equal (nreverse requests) '(1 2)))
+          (should (equal (alist-get 'state (forgejo-db-get-issue
+                                            "forgejo.invalid" "owner" "repo" 3)) "open"))
+          (should (eq incomplete
+                      (equal old-time (forgejo-db-get-sync-time
+                                       "forgejo.invalid" "owner" "repo" key)))))))))
+
+(ert-deftest forgejo-test-issue-and-pull-sync-cursor-start-time ()
+  "A delayed completion records the request start, not the callback time."
+  (dolist (type '(issue pull))
+    (let ((clock "2026-01-01T00:00:00Z") done saved)
+      (cl-letf (((symbol-function 'format-time-string) (lambda (&rest _) clock))
+                ((symbol-function 'forgejo-api-get) #'ignore)
+                ((symbol-function 'forgejo-api-get-paged)
+                 (lambda (_host _endpoint _params _page-callback callback)
+                   (setq done callback)))
+                ((symbol-function 'forgejo-db-set-sync-time)
+                 (lambda (_host _owner _repo _key time) (setq saved time))))
+        (funcall (intern (format "forgejo-%s--sync" type))
+                 "https://forgejo.invalid" "forgejo.invalid"
+                 "owner" "repo" '(:state "closed") " *forgejo-test-absent*" t)
+        (setq clock "2026-01-02T00:00:00Z")
+        (funcall done nil '(:total-count 0))
+        (should (equal saved "2026-01-01T00:00:00Z"))))))
 
 (provide 'forgejo-test-issue)
 ;;; forgejo-test-issue.el ends here

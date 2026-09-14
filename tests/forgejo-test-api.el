@@ -323,5 +323,114 @@
     (should (string= (gethash "codeberg.org" forgejo-api--user-cache)
                      "auth-user"))))
 
+;;; Pagination evidence
+
+(defun forgejo-test-api--pages (helper pages &optional limit)
+  "Call HELPER with mocked PAGES and optional pagination LIMIT.
+Return (DATA HEADERS REQUESTS PAGE-NUMBERS)."
+  (let (result result-headers requests page-numbers)
+    (cl-letf (((symbol-function 'forgejo-api-get)
+               (lambda (_host _endpoint params callback &rest args)
+                 (let ((page (string-to-number (cdr (assoc "page" params)))))
+                   (push page requests)
+                   (should (<= page (length pages)))
+                   (let ((response (nth (1- page) pages)))
+                     (if (eq (car response) :error)
+                         (funcall (plist-get args :error-callback) (cadr response))
+                       (funcall callback (car response) (cadr response))))))))
+      (let ((done (lambda (data headers)
+                    (setq result data result-headers headers)))
+            (params `(("limit" . ,(or limit "50")))))
+        (if (eq helper 'forgejo-api-get-all)
+            (funcall helper "https://forgejo.invalid" "items" params done)
+          (funcall helper "https://forgejo.invalid" "items" params
+                   (lambda (_data _headers page) (push page page-numbers)) done))))
+    (list result result-headers (nreverse requests) (nreverse page-numbers))))
+
+(ert-deftest forgejo-test-api-pagination-capped-pages ()
+  "Both helpers follow capped pages using total or Link evidence."
+  (dolist (helper '(forgejo-api-get-all forgejo-api-get-paged))
+    (dolist (headers '((:total-count 3)
+                      (:link "<https://forgejo.invalid/items?page=2>; rel=\"next\"")
+                      (:total-count 3 :link "<https://forgejo.invalid/items?page=2>; rel=\"next\"")))
+      (let ((result (forgejo-test-api--pages
+                     helper (list (list '(((id . 1)) ((id . 2))) headers)
+                                  (list '(((id . 3))) '(:total-count 3))))))
+        (should (equal (mapcar (lambda (item) (alist-get 'id item)) (car result))
+                       '(1 2 3)))
+        (should-not (plist-get (cadr result) :partial))
+        (should (equal (nth 2 result) '(1 2)))
+        (when (eq helper 'forgejo-api-get-paged)
+          (should (equal (nth 3 result) '(1 2))))))))
+
+(ert-deftest forgejo-test-api-pagination-inconsistent-exhaustion ()
+  "Empty pages cannot override a larger total or a next link."
+  (dolist (helper '(forgejo-api-get-all forgejo-api-get-paged))
+    (dolist (headers '((:total-count 3)
+                      (:link "<https://forgejo.invalid/items?page=3>; rel=\"next\"")))
+      (let ((result (forgejo-test-api--pages
+                     helper (list (list '(((id . 1))) '(:total-count 3))
+                                  (list nil headers)))))
+        (should (equal (car result) '(((id . 1)))))
+        (should (plist-get (cadr result) :partial))
+        (should (equal (nth 2 result) '(1 2)))))))
+
+(ert-deftest forgejo-test-api-pagination-retains-total-evidence ()
+  "Losing the total header does not certify a truncated result."
+  (dolist (helper '(forgejo-api-get-all forgejo-api-get-paged))
+    (let ((result (forgejo-test-api--pages
+                   helper '(((((id . 1))) (:total-count 3))
+                            (nil nil)))))
+      (should (plist-get (cadr result) :partial))
+      (should (= (plist-get (cadr result) :total-count) 3)))))
+
+(ert-deftest forgejo-test-api-pagination-repeated-and-drifting-pages ()
+  "Duplicate items, changing totals, and invalid next pages are partial."
+  (dolist (helper '(forgejo-api-get-all forgejo-api-get-paged))
+    (dolist (pages '((((((id . 1))) (:total-count 2))
+                      ((((id . 1))) (:total-count 2)))
+                     (((((id . 1))) (:total-count 3))
+                      ((((id . 2))) (:total-count 2)))
+                     (((((id . 1)))
+                       (:link "<https://forgejo.invalid/items?page=1>; rel=\"next\"")))))
+      (should (plist-get (cadr (forgejo-test-api--pages helper pages)) :partial)))))
+
+(ert-deftest forgejo-test-api-pagination-no-headers-and-errors ()
+  "Headerless pages continue to empty; failures retain useful data."
+  (dolist (helper '(forgejo-api-get-all forgejo-api-get-paged))
+    (let ((result (forgejo-test-api--pages
+                   helper '(((((id . 1))) nil) (nil nil)))))
+      (should (equal (nth 2 result) '(1 2)))
+      (should-not (plist-get (cadr result) :partial)))
+    (let ((result (forgejo-test-api--pages
+                   helper '(((((id . 1))) (:total-count 2))
+                            (:error (:status 503))))))
+      (should (equal (car result) '(((id . 1)))))
+      (should (plist-get (cadr result) :partial))
+      (should (= (plist-get (plist-get (cadr result) :error) :status) 503)))))
+
+(ert-deftest forgejo-test-api-pagination-terminal-evidence ()
+  "Recognize terminal pages and reject contradictory Link evidence."
+  (dolist (helper '(forgejo-api-get-all forgejo-api-get-paged))
+    (dolist (pages '(((nil (:total-count 0)))
+                     (((((id . 1))) (:link "<https://forgejo.invalid/items?page=2>; rel=\"next\""))
+                      ((((id . 2))) (:link "<https://forgejo.invalid/items?page=1>; rel=\"prev\"")))))
+      (should-not (plist-get (cadr (forgejo-test-api--pages helper pages)) :partial)))
+    (dolist (headers '((:total-count 1 :link "<https://forgejo.invalid/items?page=2>; rel=\"next\"")
+                      (:total-count 2 :link "<https://forgejo.invalid/items?page=1>; rel=\"prev\"")
+                      (:link "<https://forgejo.invalid/items>; rel=\"next\"")))
+      (should (plist-get
+               (cadr (forgejo-test-api--pages helper (list (list '(((id . 1))) headers))))
+               :partial)))))
+
+(ert-deftest forgejo-test-api-pagination-page-budget ()
+  "Both helpers bound progress when headers never certify completion."
+  (let ((forgejo-api-max-pages 2))
+    (dolist (helper '(forgejo-api-get-all forgejo-api-get-paged))
+      (let ((result (forgejo-test-api--pages
+                     helper '(((((id . 1))) nil) ((((id . 2))) nil)))))
+        (should (equal (nth 2 result) '(1 2)))
+        (should (plist-get (cadr result) :partial))))))
+
 (provide 'forgejo-test-api)
 ;;; forgejo-test-api.el ends here

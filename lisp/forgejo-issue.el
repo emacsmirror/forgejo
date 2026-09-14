@@ -101,10 +101,13 @@ FILTERS is the active filter plist."
   "Fetch issues for OWNER/REPO from the API and re-render BUF-NAME.
 The DB is updated before re-rendering.  HOST-URL is the instance.
 HOST is the hostname.  FILTERS is the active filter plist.  When FORCE
-is nil, use incremental sync via the `since' parameter.  When FORCE is
-non-nil, fetch all and mark missing issues as closed."
-  (let* ((since (unless force
-                  (forgejo-db-get-sync-time host owner repo "issues")))
+is nil, use the cursor for this exact query via the `since' parameter.
+When FORCE is non-nil, fetch all matching issues.  Only a complete,
+unfiltered open fetch may mark missing issues as closed."
+  (let* ((sync-key (forgejo-filter-sync-key "issues" filters))
+         (sync-start (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
+         (since (unless force
+                  (forgejo-db-get-sync-time host owner repo sync-key)))
          (api-filters (if since
                           (plist-put (copy-sequence filters) :since since)
 			filters)))
@@ -133,9 +136,7 @@ non-nil, fetch all and mark missing issues as closed."
              (let ((numbers (mapcar (lambda (i) (alist-get 'number i)) all-data)))
                (forgejo-db-close-missing host owner repo numbers)))
            (unless partial
-             (forgejo-db-set-sync-time host owner repo "issues"
-                                       (format-time-string "%Y-%m-%dT%H:%M:%SZ"
-                                                           nil t)))
+             (forgejo-db-set-sync-time host owner repo sync-key sync-start))
            (when (buffer-live-p (get-buffer buf-name))
              (with-current-buffer buf-name
                (forgejo-issue--render-from-db
