@@ -3,5 +3,7 @@ Makefile
 *.scm
 .*
 tests
+admin
+local.mk
 *.nix
 flake.lock

@@ -418,13 +418,24 @@ NODE-DATA is a plist with :type and type-specific keys."
       (forgejo-buffer--insert-separator))))
 
 (defun forgejo-buffer--pp-comment (data)
-  "Render a comment from DATA plist."
-  (let ((author (plist-get data :author))
-        (body (plist-get data :body))
-        (created (plist-get data :created-at))
-        (updated (plist-get data :updated-at)))
+  "Render a comment or body-bearing review from DATA plist.
+A present :review-state selects the review decision instead of a comment."
+  (let* ((author (plist-get data :author))
+         (body (plist-get data :body))
+         (created (plist-get data :created-at))
+         (updated (plist-get data :updated-at))
+         (state (plist-get data :review-state))
+         (verb (if (plist-member data :review-state)
+                   (forgejo-buffer--review-state-text state)
+                 "commented")))
     (insert (propertize author 'face 'forgejo-comment-author-face)
-            (propertize (concat " commented " (forgejo-buffer--relative-time created))
+            (propertize " " 'face 'shadow)
+            (propertize verb 'face (pcase state
+                                    ("APPROVED" 'forgejo-review-approved-face)
+                                    ("REQUEST_CHANGES" 'forgejo-review-rejected-face)
+                                    ("COMMENT" 'forgejo-review-comment-face)
+                                    (_ 'shadow)))
+            (propertize (concat " " (forgejo-buffer--relative-time created))
                         'face 'shadow))
     (when (and created updated (not (string= created updated)))
       (forgejo-buffer--insert-edited-indicator))
@@ -664,6 +675,7 @@ Returns a list of nodes (may be multiple for review with threads)."
                   :id (alist-get 'id event)
                   :author actor
                   :body body
+                  :review-state state
                   :created-at (alist-get 'created_at event))))
      (t
       (list (list :type 'event

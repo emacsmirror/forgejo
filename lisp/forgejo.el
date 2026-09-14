@@ -23,8 +23,6 @@
 
 ;;; Commentary:
 
-;; Unmaintained.  Feel free to fork.  See README.org.
-;;
 ;; Emacs front-end for Forgejo instances (Codeberg, self-hosted).
 ;;
 ;; Browse, filter, and manage issues and pull requests from Emacs.
@@ -32,13 +30,13 @@
 ;; cached in a local SQLite database so views render instantly after
 ;; the first sync.
 ;;
-;; Setup (for local use or a fork):
+;; Setup (see README.org for installation and development):
 ;;
 ;;   Configure your Forgejo instance(s):
 ;;
-;;       (setq forgejo-hosts '(("https://codeberg.org" "token")))
+;;       (setq forgejo-hosts '(("https://codeberg.org")))
 ;;
-;;   Or store your token in ~/.authinfo.gpg:
+;;   Store your token outside source files, for example in ~/.authinfo.gpg:
 ;;
 ;;        machine codeberg.org login YOUR_USERNAME password YOUR_TOKEN
 ;;

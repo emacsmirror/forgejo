@@ -101,6 +101,17 @@ The :query value, if present, is appended as bare words."
       (push query parts))
     (string-join (nreverse parts) " ")))
 
+(defun forgejo-filter-sync-key (type filters)
+  "Return a query-scoped sync key for TYPE and FILTERS.
+TYPE is \"issues\" or \"pulls\".  Keep the filter order canonical so
+identical queries share a cursor regardless of plist order.  Do not reuse
+legacy repository-wide cursors, whose query coverage is unknown."
+  (let ((print-length nil)
+        (print-level nil))
+    (format "%s:%S" type
+            (mapcar (lambda (key) (plist-get filters key))
+                    '(:state :labels :milestone :author :query :since :page)))))
+
 (defun forgejo-filter-authoritative-open-sync-p (filters partial)
   "Return non-nil when FILTERS describe a complete open sync.
 PARTIAL non-nil means the API response did not include all pages."

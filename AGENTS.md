@@ -2,14 +2,6 @@
 
 Public guidance for contributors and coding agents working on `emacs-forgejo`.
 
-## Status
-
-**Unmaintained. Feel free to fork.**
-
-This matches the project `README.org`. There is no actively maintained
-upstream install path or release train from the original author. Keep or
-adapt the notes below only if you are forking or studying the code.
-
 ## Project
 
 `emacs-forgejo` is an Emacs 29.1+ client for Forgejo instances. It supports
@@ -72,17 +64,20 @@ make compile   # Byte-compile package sources
 make dev       # Compile, lint, compile tests, and run the full ERT suite
 ```
 
-Run `make dev` before proposing a change on a fork. Add new source and test
-files to the Makefile's explicit `SRCS` and `TESTS` lists.
+Run `make dev` and `nix flake check` before proposing a change. Add new source
+and test files to the Makefile's explicit lists and `admin/sources`, the closed
+Nix build manifest. Checkdoc diagnostics must fail the gate.
+
+Use `make load EMACSCLIENT='emacsclient --socket-name forgejo-dev'` for a
+running development Emacs. Private overrides belong in ignored `local.mk`.
+Reload is one fail-fast eval with bounded map rollback, not an arbitrary Lisp
+transaction. Preserve custom options and bindings. Run reload/failure tests
+in a disposable Emacs; do not use a contributor's live editor or credentials.
+See README.org for reload limitations and the non-Nix fallback.
 
 ## Contributions
 
-This upstream is unmaintained. Prefer forking. Historical contact addresses for
-the original author:
-
-- patches: <patches@thanosapollo.org> with subject like
-  `[PATCH emacs-forgejo] Short description`
-- bugs/features: <bugs@thanosapollo.org> with subject like
-  `[BUG emacs-forgejo] Short description`
-
-Do not treat those addresses as an active maintenance commitment.
+Keep reports and patches focused on reproducible behavior. Include the relevant
+test commands and their results. Contributions of roughly 15 lines or more
+require [FSF copyright assignment](https://www.gnu.org/prep/maintain/html_node/Copyright-Papers.html);
+see [the project discussion](https://codeberg.org/thanosapollo/emacs-forgejo/issues/17).

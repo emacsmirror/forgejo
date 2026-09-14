@@ -175,8 +175,9 @@ CALLBACK is passed the response data and headers."
 
 (defun forgejo-review--submit (host-url owner repo number callback)
   "Submit a review on PR NUMBER in OWNER/REPO on HOST-URL.
-Prompts for the review type and an optional body.
-CALLBACK is called on success."
+Prompt for the review type and an optional body.
+Canceling the composer submits nothing; an explicitly submitted empty
+body is allowed.  CALLBACK is called on success."
   (let* ((type (completing-read "Review type: "
                                 '("approve" "comment")
                                 nil t))
@@ -184,14 +185,15 @@ CALLBACK is called on success."
                   ("approve" "APPROVED")
                   ("comment" "COMMENT")))
          (body (forgejo-utils-read-body)))
-    (forgejo-review--post-review
-     host-url owner repo number
-     `((event . ,event)
-       ,@(and (not (string-empty-p (string-trim (or body ""))))
-              `((body . ,body))))
-     (lambda (_data _headers)
-       (message "Review submitted: %s on %s/%s#%d" type owner repo number)
-       (when callback (funcall callback))))))
+    (when body
+      (forgejo-review--post-review
+       host-url owner repo number
+       `((event . ,event)
+         ,@(and (not (string-empty-p (string-trim body)))
+                `((body . ,body))))
+       (lambda (_data _headers)
+         (message "Review submitted: %s on %s/%s#%d" type owner repo number)
+         (when callback (funcall callback)))))))
 
 (defun forgejo-review--reply (host-url owner repo number review-id
 				       path position original-position callback)

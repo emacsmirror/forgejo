@@ -1,4 +1,5 @@
 *.elc
+local.mk
 
 *-autoloads.el
 *pkg.el

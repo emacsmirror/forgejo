@@ -435,77 +435,91 @@ ARGS is a plist of keyword options:
 ARGS accepts :error-callback for failure handling."
   (apply #'forgejo-api--request host "GET" endpoint params nil callback args))
 
+(defcustom forgejo-api-max-pages 1000
+  "Maximum pages fetched by a single paginated request.
+Reaching this limit with more results pending yields a partial result."
+  :type 'natnum
+  :group 'forgejo)
+
+(defun forgejo-api--next-page (link)
+  "Return the next page number from LINK, nil if absent, or `invalid'.
+Only read the page parameter; never send credentials to a linked URL."
+  (when (and link (string-match "<\\([^>]+\\)>;[[:space:]]*rel=\"next\"" link))
+    (let ((url (match-string 1 link)))
+      (if (string-match "[?&]page=\\([0-9]+\\)\\(?:&\\|\\'\\)" url)
+          (string-to-number (match-string 1 url))
+        'invalid))))
+
 (defun forgejo-api-get-all (host endpoint &optional params callback)
   "GET all pages from ENDPOINT on HOST, call CALLBACK with (all-data headers).
-Fetches pages sequentially until all results are collected.
-On mid-pagination failure, calls CALLBACK with partial data and
-headers tagged with :partial t.
-PARAMS should include a \"limit\" entry.  The \"page\" param is
-managed automatically."
-  (let ((limit (or (cdr (assoc "limit" params)) "30"))
-        (accum nil)
-        (page 1))
-    (cl-labels
-        ((fetch-page ()
-           (let ((page-params (cons (cons "page" (number-to-string page))
-                                    params)))
-             (forgejo-api-get
-              host endpoint page-params
-              (lambda (data headers)
-                (setq accum (append accum data))
-                (let ((total (plist-get headers :total-count)))
-                  (if (and total
-                           (< (length accum) total)
-                           (>= (length data) (string-to-number limit)))
-                      (progn
-                        (setq page (1+ page))
-                        (fetch-page))
-                    (when callback
-                      (funcall callback accum headers)))))
-              :error-callback
-              (lambda (error-info)
-                (when callback
-                  (funcall callback accum
-                           (list :total-count nil :link nil
-                                 :partial t :error error-info))))))))
-      (fetch-page))))
+PARAMS is the query alist; the page parameter is managed automatically.
+Use the same completeness and partial-result rules as `forgejo-api-get-paged'."
+  (forgejo-api-get-paged host endpoint params nil callback))
 
 (defun forgejo-api-get-paged (host endpoint params page-callback
                                    &optional done-callback)
   "GET all pages from ENDPOINT on HOST, calling PAGE-CALLBACK after each.
+PARAMS is the query alist; the page parameter is managed automatically.
 PAGE-CALLBACK receives (PAGE-DATA HEADERS PAGE-NUMBER).
-DONE-CALLBACK receives (ALL-DATA HEADERS) when all pages are fetched.
-On mid-pagination failure, calls DONE-CALLBACK with partial data and
-headers tagged with :partial t."
-  (let ((limit (or (cdr (assoc "limit" params)) "50"))
-        (accum nil)
+DONE-CALLBACK receives (ALL-DATA HEADERS) when pagination ends.
+Follow total-count and Link evidence, not the requested page size.
+Without pagination headers, continue until an empty page.
+On request failure, inconsistent evidence, duplicate items, or reaching
+`forgejo-api-max-pages', return useful data with headers tagged :partial t.
+Offset pagination is not a snapshot: undetectable concurrent changes may
+still omit items even when the reported total is satisfied."
+  (let ((params (assoc-delete-all "page" (copy-alist params)))
+        (seen (make-hash-table :test 'equal))
+        (chunks nil)
+        (total nil)
+        (last-headers nil)
         (page 1))
     (cl-labels
-        ((fetch-page ()
-           (let ((page-params (cons (cons "page" (number-to-string page))
-                                    params)))
-             (forgejo-api-get
-              host endpoint page-params
-              (lambda (data headers)
-                (setq accum (append accum data))
+        ((finish (headers &optional partial error-info)
+           (when done-callback
+             (funcall done-callback (apply #'append (reverse chunks))
+                      (append (and partial (list :partial t))
+                              (and error-info (list :error error-info))
+                              (list :total-count total) headers))))
+         (fetch-page ()
+           (forgejo-api-get
+            host endpoint (cons (cons "page" (number-to-string page)) params)
+            (lambda (data headers)
+              (let* ((reported (plist-get headers :total-count))
+                     (link (plist-get headers :link))
+                     (next (forgejo-api--next-page link))
+                     (changed (and total reported (/= total reported)))
+                     duplicate)
+                (setq last-headers headers
+                      total (or total reported))
+                (dolist (item data)
+                  (let ((key (or (and (listp item) (alist-get 'id item)) item)))
+                    (if (gethash key seen)
+                        (setq duplicate t)
+                      (puthash key t seen))))
+                (push data chunks)
                 (when page-callback
                   (funcall page-callback data headers page))
-                (let ((total (plist-get headers :total-count)))
-                  (if (and total
-                           (< (length accum) total)
-                           (>= (length data) (string-to-number limit)))
-                      (progn
-                        (setq page (1+ page))
-                        (fetch-page))
-                    (when done-callback
-                      (funcall done-callback accum headers)))))
-              :error-callback
-              (lambda (error-info)
-                (when done-callback
-                  (funcall done-callback accum
-                           (list :total-count nil :link nil
-                                 :partial t :error error-info))))))))
-      (fetch-page))))
+                (let* ((count (hash-table-count seen))
+                       (more (or next (and total (< count total))
+                                 (and (not total) (not link) data)))
+                       (inconsistent
+                        (or changed duplicate
+                            (and total (> count total))
+                            (and next (not (equal next (1+ page))))
+                            (and next total (>= count total))
+                            (and more (or (not data)
+                                          (and link (not next)))))))
+                  (cond
+                   (inconsistent (finish headers t))
+                   ((not more) (finish headers))
+                   ((>= page forgejo-api-max-pages) (finish headers t))
+                   (t (setq page (1+ page)) (fetch-page))))))
+            :error-callback
+            (lambda (error-info) (finish last-headers t error-info)))))
+      (if (> forgejo-api-max-pages 0)
+          (fetch-page)
+        (finish nil t)))))
 
 (defun forgejo-api-post (host endpoint &optional params json-body callback
                               &rest args)

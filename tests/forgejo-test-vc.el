@@ -9,6 +9,7 @@
 
 (require 'forgejo-test-helper)
 (require 'forgejo-vc)
+(require 'forgejo-repo)
 
 ;;; Group 1: Refspec building
 
@@ -183,6 +184,104 @@
       (should-error (forgejo-vc-submit "origin" "topic" "master" nil)
                     :type 'user-error)
       (should-not called))))
+
+;;; Group 7: Configured web endpoints and SSH transport
+
+(defun forgejo-test-vc--configured-endpoint (host-url remote-url)
+  "Exercise VC web operations for HOST-URL beside SSH REMOTE-URL."
+  (ert-with-temp-directory dir
+    (let ((default-directory (file-name-as-directory dir))
+          (forgejo-hosts (list (list host-url)))
+          (forgejo-vc--selected-remotes (make-hash-table :test 'equal))
+          (forgejo-vc--counts (make-hash-table :test 'equal))
+          (origin "git@gitolite.example:repo")
+          requests browsed pushed fetched)
+      (dolist (args `(("init" "--quiet" "-b" "topic")
+                      ("remote" "add" "origin" ,origin)
+                      ("remote" "add" "forgejo" ,remote-url)))
+        (should (zerop (apply #'process-file "git" nil nil nil args))))
+      (forgejo-test-with-temp-db
+        (with-temp-buffer
+          (cl-letf (((symbol-function 'keymap-popup) #'ignore)
+                    ((symbol-function 'forgejo-api-get)
+                     (lambda (&rest args) (push args requests)))
+                    ((symbol-function 'browse-url)
+                     (lambda (url &rest _) (push url browsed))))
+            ;; An uncached menu first requests metadata.  Deliver its reply
+            ;; after the command returns, then reopen to request both counts.
+            (call-interactively #'forgejo-vc)
+            (should (= (length requests) 1))
+            (should (equal (seq-take (car requests) 3)
+                           (list host-url "repos/owner/repo" nil)))
+            (funcall (nth 3 (car requests))
+                     '((name . "repo") (owner . ((login . "owner")))
+                       (has_issues . t) (has_pull_requests . t)
+                       (default_branch . "main")) nil)
+            (setq requests nil)
+            (call-interactively #'forgejo-vc)
+            (should (= (length requests) 2))
+            (should (equal (sort (mapcar
+                                 (lambda (request)
+                                   (should (equal (seq-take request 2)
+                                                  (list host-url
+                                                        "repos/owner/repo/issues")))
+                                   (should (equal (assoc "state" (nth 2 request))
+                                                  '("state" . "open")))
+                                   (should (equal (assoc "limit" (nth 2 request))
+                                                  '("limit" . "1")))
+                                   (cdr (assoc "type" (nth 2 request))))
+                                 requests) #'string<)
+                           '("issues" "pulls")))
+            (dolist (request requests)
+              (funcall (nth 3 request) nil
+                       (list :total-count
+                             (if (equal (cdr (assoc "type" (nth 2 request)))
+                                        "issues") 3 5))))
+            (should (= (forgejo-vc--issue-count) 3))
+            (should (= (forgejo-vc--pr-count) 5))
+            (call-interactively #'forgejo-vc-browse)
+            (should (equal browsed (list (concat host-url "/owner/repo"))))
+            (should (equal (forgejo-vc--repo-from-remote)
+                           (list host-url "owner" "repo" "forgejo"))))
+          ;; Intercept Git launch, not remote discovery or argument building.
+          (cl-letf (((symbol-function 'start-process)
+                     (lambda (_name _buffer &rest command)
+                       (setq pushed command)))
+                    ((symbol-function 'set-process-sentinel) #'ignore)
+                    ((symbol-function 'vc-git-branches) (lambda () '("topic")))
+                    ((symbol-function 'make-process)
+                     (lambda (&rest args)
+                       (setq fetched (plist-get args :command))
+                       (kill-buffer (plist-get args :stderr)))))
+            (unwind-protect
+                (progn
+                  (forgejo-vc-submit "forgejo" "topic" "main" t)
+                  (should (equal pushed '("git" "push" "-v" "forgejo"
+                                          "HEAD:refs/for/main/topic"
+                                          "-o" "force-push=true")))
+                  (forgejo-vc-fetch 7)
+                  (should (equal fetched '("git" "fetch" "forgejo"
+                                           "pull/7/head"))))
+              (when-let* ((buf (get-buffer "*forgejo PR*")))
+                (kill-buffer buf))))))
+      (should (equal (forgejo-vc--remotes) '("forgejo" "origin")))
+      (should (equal (forgejo-vc--remote-url "origin") origin))
+      (should (equal (forgejo-vc--remote-url "forgejo") remote-url)))))
+
+(ert-deftest forgejo-test-vc-configured-http-web-port ()
+  "HTTP web ports are independent of explicit SSH transport ports."
+  (forgejo-test-vc--configured-endpoint
+   "http://forge.example:3000" "ssh://git@forge.example:2222/owner/repo.git"))
+
+(ert-deftest forgejo-test-vc-configured-https ()
+  "Configured HTTPS is used for SCP-style SSH remotes."
+  (forgejo-test-vc--configured-endpoint
+   "https://forge.example" "git@forge.example:owner/repo.git"))
+
+(ert-deftest forgejo-test-vc-configured-https-web-port ()
+  "Configured HTTPS web ports do not inherit the SSH port."
+  (forgejo-test-vc--configured-endpoint
+   "https://forge.example:8443" "ssh://git@forge.example:2222/owner/repo.git"))
 
 (provide 'forgejo-test-vc)
 ;;; forgejo-test-vc.el ends here
