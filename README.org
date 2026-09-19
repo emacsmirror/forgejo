@@ -98,4 +98,3 @@ source/test files to the Makefile's explicit lists before running Nix.
 * Contributing
 
 Keep changes focused, include a regression test and run =make dev=.
-See =AGENTS.md= for architecture and data-safety conventions.
