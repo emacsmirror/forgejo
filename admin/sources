@@ -1,5 +1,8 @@
 admin/forgejo-dev.el
 admin/sources
+admin/test-matrix
+admin/test-matrix-runner.py
+admin/matrix-ert.el
 lisp/forgejo-alert.el
 lisp/forgejo-api.el
 lisp/forgejo-buffer.el

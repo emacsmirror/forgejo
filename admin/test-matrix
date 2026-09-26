@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""Run the declared minimum, pinned Nix default, and Thanos Emacs fork."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import shlex
+import subprocess
+import sys
+import tempfile
+
+
+LABELS = {
+    "minimum": "Package-Requires minimum",
+    "default": "Pinned nixpkgs default Emacs",
+    "fork": "Thanos Emacs fork",
+}
+
+
+def minimum_version(source):
+    header = (source / "lisp/forgejo.el").read_text()
+    matches = re.findall(r'^;; Package-Requires:.*\(emacs "([0-9]+(?:\.[0-9]+)+)"\)',
+                         header, re.MULTILINE)
+    if len(matches) != 1:
+        raise ValueError("Expected one exact Emacs Package-Requires minimum")
+    return matches[0]
+
+
+def executable(command):
+    found = shutil.which(command)
+    if not found:
+        raise ValueError(f"Required executable unavailable: {command}")
+    return str(Path(found).resolve())
+
+
+def snapshot(source, destination):
+    """Copy only manifest inputs; reject symlinks and path escapes."""
+    files = ["Makefile"] + (source / "admin/sources").read_text().splitlines()
+    declared = set(files)
+    actual = {str(p.relative_to(source)) for directory in ("tests", "lisp")
+              for p in (source / directory).rglob("*.el")}
+    if not actual <= declared:
+        raise ValueError(f"Lisp inputs missing from admin/sources: {sorted(actual - declared)}")
+    for name in files:
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"Invalid source manifest path: {name}")
+        origin = source / relative
+        if not origin.is_file() or origin.resolve() != source.resolve() / relative:
+            raise ValueError(f"Source input is missing or symlinked: {name}")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(origin, target)
+
+
+def validate_stats(stats, allow_empty=False):
+    """Reject incomplete runs; permit zero matches only for focused suites."""
+    keys = ("total", "completed", "expected", "unexpected", "skipped")
+    if any(type(stats.get(key)) is not int or stats[key] < 0 for key in keys):
+        raise ValueError("Invalid ERT completion receipt")
+    if not ((allow_empty or stats["total"] > 0) and stats["completed"] == stats["total"]
+            and stats["expected"] + stats["unexpected"] + stats["skipped"] == stats["total"]
+            and stats["unexpected"] == 0):
+        raise ValueError(f"Failed or incomplete ERT run: {stats}")
+
+
+def ordinary_inputs(source, env):
+    """Reconcile Make's execution lists against all ordinary Lisp inputs."""
+    inputs = subprocess.check_output(
+        ["make", "--no-print-directory", "matrix-inputs"], cwd=source, env=env, text=True
+    ).splitlines()
+    sources, helpers, suites = [shlex.split(line) for line in inputs]
+    ordinary_sources = sorted(str(p.relative_to(source)) for p in (source / "lisp").rglob("*.el"))
+    ordinary_tests = {str(p.relative_to(source)) for p in (source / "tests").rglob("*.el")}
+    ordinary_suites = sorted(file for file in ordinary_tests
+                             if Path(file).name.startswith("forgejo-test-")
+                             and Path(file).name != "forgejo-test-helper.el")
+    if sorted(sources) != ordinary_sources:
+        raise ValueError("Make SRCS disagrees with ordinary source discovery")
+    if sorted(suites) != ordinary_suites:
+        raise ValueError("Make TESTS disagrees with ordinary suite discovery")
+    if sorted(helpers) != sorted((ordinary_tests - set(suites)) | {"admin/forgejo-dev.el"}):
+        raise ValueError("Make TEST_HELPERS disagrees with ordinary helper discovery")
+    return sources, helpers, suites
+
+
+def lane(source, root, name, emacs, expected):
+    """Run one clean build with its own sources, dependencies and state."""
+    root.mkdir(parents=True, exist_ok=False)
+    build = root / "source"
+    snapshot(source, build)
+    env = os.environ.copy()
+    # Never inherit another Make invocation's runtime, targets or bytecode paths.
+    for key in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKEFILES", "GNUMAKEFLAGS", "EMACSLOADPATH",
+                "EMACSNATIVELOADPATH", "EMACS_OPTS", "EMACS_CMD", "EMACSDATA",
+                "EMACSDOC", "EMACSPATH", "ERT_OPTS", "SELECTOR", "TESTS"):
+        env.pop(key, None)
+    for key, directory in (("HOME", "home"), ("TMPDIR", "tmp"),
+                           ("XDG_CONFIG_HOME", "config"), ("XDG_CACHE_HOME", "cache"),
+                           ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state")):
+        env[key] = str(root / directory)
+        Path(env[key]).mkdir()
+    env["FORGEJO_ENV_WRAPPED"] = "1"
+    dependencies = root / "dependencies"
+    shutil.copytree(env["FORGEJO_MATRIX_DEPS"], dependencies)
+    options = ["-Q", "--batch"]
+    # Nested tooling tests launch the same runtime: source-only deps apply there too.
+    env["EMACSLOADPATH"] = str(dependencies) + os.pathsep
+    env["EMACS_CMD"] = emacs
+    env["PATH"] = str(Path(emacs).parent) + os.pathsep + env["PATH"]
+    env["FORGEJO_TEST_RESULTS"] = str(root / "ert")
+    if any(char.isspace() for char in emacs):
+        raise ValueError("Matrix executable path must not contain whitespace")
+    version = subprocess.check_output(
+        [emacs, "-Q", "--batch", "--eval", "(princ emacs-version)"],
+        env=env, text=True).strip()
+    print(f"=== {LABELS[name]}: GNU Emacs {version} ({emacs}) ===", flush=True)
+    if expected is not None and version != expected:
+        raise ValueError(f"{LABELS[name]}: expected {expected}, got {version}")
+    receipt = {"lane": name, "label": LABELS[name], "version": version,
+               "executable": emacs, "source": str(build),
+               "environment": {key: env[key] for key in env if key in (
+                   "HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+                   "XDG_DATA_HOME", "XDG_STATE_HOME")}}
+    (root / "runtime.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    sources, helpers, suites = ordinary_inputs(build, env)
+    selected = shlex.split(env.get("MATRIX_TESTS", "")) or suites
+    if not set(selected) <= set(suites):
+        raise ValueError("Unknown matrix suite selection")
+    for target in ("compile", "lint", "test"):
+        command = ["make", "--no-print-directory", target,
+                   f"EMACS_CMD={emacs}", "SELECTOR=t", "TESTS=" + " ".join(selected)]
+        status = subprocess.run(command, cwd=build, env=env, check=False).returncode
+        if status:
+            raise RuntimeError(f"{LABELS[name]} {target} failed (exit {status}); diagnostics: {root}")
+    # Neither Make's exit status nor the tested Emacs can certify these outputs.
+    for file in sources + helpers + selected:
+        artifact = (build / file).with_suffix(".elc")
+        if not artifact.is_file() or not artifact.stat().st_size:
+            raise ValueError(f"Missing compilation artifact: {artifact}")
+    verify_suites(root / "ert", selected)
+    (root / "passed").write_text(version + "\n")
+
+
+def matrix(source):
+    # This preflight MUST precede all Nix evaluation/development-shell entry.
+    # A missing fork fails its lane, but must not suppress the other attempts.
+    fork_error = None
+    fork = None
+    try:
+        if os.environ.get("IN_NIX_SHELL") or os.environ.get("FORGEJO_ENV_WRAPPED"):
+            raise ValueError("Run make test-matrix outside Nix to resolve Thanos Emacs fork")
+        fork = executable(os.environ.get("THANOS_EMACS", "emacs"))
+        print(f"Thanos Emacs fork resolved before Nix: {fork}", flush=True)
+    except ValueError as error:
+        fork_error = str(error)
+    ref = "git+" + source.as_uri()
+    root = Path(tempfile.mkdtemp(prefix="forgejo-matrix-"))
+    print(f"Matrix evidence: {root}", flush=True)
+    failed = []
+    archive_error = None
+    try:
+        # Freeze the Git-aware input once so later lanes cannot read a different
+        # working-tree generation.  Archive also realizes the source closure.
+        archive = json.loads(subprocess.check_output(
+            [executable("nix"), "flake", "archive", "--json", "--no-write-lock-file", ref],
+            text=True))
+        source = Path(archive["path"])
+        if not source.is_dir():
+            raise ValueError("Nix did not realize the matrix source")
+        ref = str(source)
+        (root / "source.json").write_text(json.dumps(archive, indent=2) + "\n")
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        archive_error = str(error)
+    for name in LABELS:
+        log_path = root / (name + ".log")
+        status = 1
+        with log_path.open("w") as log:
+            try:
+                if name == "fork" and fork_error:
+                    raise ValueError(fork_error)
+                if archive_error:
+                    raise ValueError(archive_error)
+                # Git-aware input avoids copying ignored/private files into the store.
+                command = [executable("nix"), "develop",
+                           ref + "#matrix-" + ("minimum" if name == "minimum" else "default"),
+                           "--command", "python3", str(source / "admin/test-matrix"),
+                           "--lane", name, "--root", str(root / name)]
+                if name == "fork":
+                    command.extend(["--emacs", fork])
+                status = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
+                                        check=False).returncode
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                log.write(str(error) + "\n")
+        # A successful subprocess without the lane's completion is not success.
+        passed = root / name / "passed"
+        ok = status == 0 and passed.is_file() and bool(passed.read_text().strip())
+        version = passed.read_text().strip() if ok else "incomplete"
+        print(f"{'PASS' if ok else 'FAIL'} {LABELS[name]} ({version}); log: {log_path}", flush=True)
+        if not ok:
+            failed.append(name)
+    if failed:
+        raise RuntimeError("Required matrix lanes failed: " + ", ".join(failed))
+    print("PASS all three required Emacs lanes", flush=True)
+
+
+def verify_receipts(root, suites, allow_empty=False):
+    """Require genuine complete receipts and a nonempty aggregate selection."""
+    total = 0
+    for suite in suites:
+        stats = json.loads((root / (Path(suite).stem + ".json")).read_text())
+        validate_stats(stats, allow_empty)
+        names = stats.get("names")
+        if (stats.get("suite") != suite or not isinstance(names, list)
+                or not all(isinstance(name, str) for name in names)
+                or len(names) != stats["total"] or len(set(names)) != stats["total"]
+                or stats.get("sqlite") is not True or stats.get("libxml") is not True):
+            raise ValueError(f"Invalid ERT identities or required features: {suite}")
+        total += stats["total"]
+    if not total:
+        raise ValueError("Empty aggregate ERT selection")
+
+
+def verify_suites(root, suites, allow_empty=False):
+    summary = json.loads((root / "summary.json").read_text())
+    if summary != suites or not suites or len(set(suites)) != len(suites):
+        raise ValueError("Missing or inconsistent suite summary")
+    verify_receipts(root, suites, allow_empty)
+
+
+def tests(source, emacs, suites, selector, options):
+    """Run each selected library in its own Emacs and verify every receipt."""
+    if os.environ.get("FORGEJO_FULL_SUITE"):
+        _, _, ordinary = ordinary_inputs(source, os.environ.copy())
+        if sorted(suites) != sorted(ordinary) or selector.strip() != "t":
+            raise ValueError("Make TESTS disagrees with ordinary suite discovery")
+    allow_empty = selector.strip() != "t" and not os.environ.get("FORGEJO_FULL_SUITE")
+    root = Path(os.environ.get("FORGEJO_TEST_RESULTS") or tempfile.mkdtemp(prefix="forgejo-ert-"))
+    root.mkdir(parents=True, exist_ok=True)
+    summary = root / "summary.json"
+    summary.unlink(missing_ok=True)
+    if not suites or len({Path(suite).stem for suite in suites}) != len(suites):
+        raise ValueError("Select at least one distinct test suite")
+    failures = []
+    for suite in suites:
+        receipt = root / (Path(suite).stem + ".json")
+        receipt.unlink(missing_ok=True)
+        env = os.environ.copy()
+        env.update(FORGEJO_MATRIX_RECEIPT=str(receipt), FORGEJO_TEST_SUITE=suite,
+                   FORGEJO_TEST_SELECTOR=selector)
+        command = shlex.split(emacs) + ["-Q", "--batch", "-L", "lisp", "-L", "tests", "-L", "admin"]
+        command += shlex.split(options) + ["--eval", "(require '" + Path(suite).stem + ")",
+                                          "-l", "admin/matrix-ert.el"]
+        log = root / (Path(suite).stem + ".log")
+        try:
+            with log.open("w") as output:
+                status = subprocess.run(command, cwd=source, env=env, stdout=output,
+                                        stderr=subprocess.STDOUT, check=False).returncode
+            stats = json.loads(receipt.read_text())
+            validate_stats(stats, allow_empty)
+            if status or stats.get("suite") != suite:
+                raise ValueError(f"ERT process failed: {suite} ({status})")
+            print(f"PASS {suite}: {stats['expected']} expected, {stats['skipped']} skipped", flush=True)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            failures.append(suite)
+            print(f"FAIL {suite}: {error}; log: {log}", flush=True)
+            if log.exists():
+                print(log.read_text(), flush=True)
+    if failures:
+        raise RuntimeError("Failed suites: " + ", ".join(failures))
+    verify_receipts(root, suites, allow_empty)
+    summary.write_text(json.dumps(suites) + "\n")
+    print(f"PASS {len(suites)} suites; receipts: {root}", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--lane", choices=LABELS)
+    parser.add_argument("--root", type=Path)
+    parser.add_argument("--emacs", default="emacs")
+    parser.add_argument("--expected")
+    parser.add_argument("--tests", nargs="+")
+    parser.add_argument("--selector", default="t")
+    parser.add_argument("--opts", default="")
+    args = parser.parse_args()
+    source = Path(__file__).resolve().parent.parent
+    try:
+        if args.tests:
+            tests(source, args.emacs, args.tests, args.selector, args.opts)
+        elif args.lane:
+            if not args.root:
+                parser.error("--lane requires --root")
+            expected = args.expected
+            if args.lane != "fork":
+                expected = expected or os.environ["FORGEJO_MATRIX_VERSION"]
+            if args.lane == "minimum" and expected != minimum_version(source):
+                raise ValueError("Pinned minimum disagrees with Package-Requires")
+            lane(source, args.root.resolve(), args.lane, executable(args.emacs), expected)
+        else:
+            matrix(source)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

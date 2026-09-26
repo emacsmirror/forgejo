@@ -3,7 +3,7 @@
 NIX := $(shell command -v nix 2>/dev/null)
 
 ENV_MAKE = $(MAKE) --no-print-directory
-ifeq ($(FORGEJO_ENV_WRAPPED),)
+ifeq ($(FORGEJO_ENV_WRAPPED)$(IN_NIX_SHELL),)
 ifneq ($(NIX),)
 ENV_MAKE = nix develop "$(CURDIR)" --command env FORGEJO_ENV_WRAPPED=1 $(MAKE) --no-print-directory
 endif
@@ -62,11 +62,19 @@ test:
 	@$(ENV_MAKE) do-compile-tests do-test
 
 do-test:
-	@for f in $(TESTS); do \
-	  echo "Testing $$f..."; \
-	  $(BATCH) -l ert $(ERT_OPTS) -l $$f \
-	    --eval '(ert-run-tests-batch-and-exit (quote $(SELECTOR)))' || exit 1; \
-	done
+	@python3 admin/test-matrix --emacs '$(EMACS_CMD)' --selector '$(SELECTOR)' \
+	  --opts='$(ERT_OPTS)' --tests $(TESTS)
+
+.PHONY: test-matrix matrix-inputs test-matrix-runner
+
+test-matrix:
+	@THANOS_EMACS='$(if $(THANOS_EMACS),$(THANOS_EMACS),emacs)' python3 admin/test-matrix
+
+matrix-inputs:
+	@printf '%s\n' '$(SRCS)' '$(TEST_HELPERS)' '$(TESTS)'
+
+test-matrix-runner:
+	@python3 admin/test-matrix-runner.py
 
 lint:
 	@$(ENV_MAKE) do-lint
